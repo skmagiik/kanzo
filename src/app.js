@@ -16,6 +16,11 @@ if (!HTMLFormElement.prototype.requestSubmit) {
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const STATUS_COLORS = ["#8a8a83", "#3b82f6", "#e8a317", "#2f9e44", "#ae3ec9", "#e8590c"];
+const BLOCKED_COLOR = "#e03131";
+const CUSTOM_COLOR = "#ae3ec9";
+const KIND_LABELS = { human: "Human", orchestrator: "Orchestrator", agent: "Task agent" };
+// The assignee that queues a task for AI agents; an orchestrator hands it to a task agent.
+const AI_AGENTS = "AI Agents";
 
 const state = {
   project: "all",
@@ -31,6 +36,8 @@ const state = {
   guests: null,
   selected: new Set(),
   sweeping: false,
+  // The board's build: when it restarts into a rebuilt Kanzo, the page reloads with it.
+  build: null,
 };
 
 async function api(method, path, body) {
@@ -52,7 +59,7 @@ let pageVersion = null;
 
 function noticeVersion(version) {
   if (!version) return;
-  pageVersion ??= version;
+  if (pageVersion === null) pageVersion = version;
   if (version !== pageVersion && !document.activeElement?.matches("input, textarea, select")) location.reload();
 }
 
@@ -103,7 +110,9 @@ function el(tag, attrs = {}, ...children) {
 // From Lucide, ISC licence.
 const ICONS = {
   newProject: '<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4Z"/>',
+  template: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2"/>',
   board: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 7v7M12 7v4M16 7v9"/>',
+  columns: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18M15 3v18"/>',
   folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   close: '<path d="M18 6 6 18M6 6l12 12"/>',
@@ -112,7 +121,9 @@ const ICONS = {
   list: '<path d="M4 6h16M4 12h16M4 18h16"/>',
   trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  moved: '<path d="M5 12h14M12 5l7 7-7 7"/>',
   copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
   human: '<circle cx="12" cy="8" r="4"/><path d="M5 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1"/>',
   url: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
   github: '<path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.1-1.3-.3-2.5-1-3.5.3-1.2.3-2.4 0-3.5 0 0-1 0-3 1.5a12 12 0 0 0-8 0C6 2 5 2 5 2c-.3 1.2-.3 2.4 0 3.5A5.4 5.4 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.4.5-.7 1-.8 1.7-.2.6-.3 1.2-.2 1.8v4"/><path d="M9 18c-4.5 2-5-2-7-2"/>',
@@ -129,6 +140,16 @@ const ICONS = {
   news: '<path d="M12 3l2.6 5.6 6.1.7-4.5 4.2 1.2 6-5.4-3-5.4 3 1.2-6-4.5-4.2 6.1-.7z"/>',
   comment: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/>',
+  bot: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/>',
+  eye: '<path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/>',
+  flag: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><path d="M4 22v-7"/>',
+  star: '<path d="m12 2 3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/>',
+  bug: '<path d="m8 2 1.88 1.88M14.12 3.88 16 2M9 7.13v-1a3 3 0 1 1 6 0v1"/><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6M12 20v-9M6.53 9C4.6 8.8 3 7.1 3 5M6 13H2M3 21c0-2.1 1.7-3.9 3.8-4M20.97 5c0 2.1-1.6 3.8-3.5 4M22 13h-4M17.2 17c2.1.1 3.8 1.9 3.8 4"/>',
+  rocket: '<path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+  beaker: '<path d="M4.5 3h15M6 3v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3M6 14h12"/>',
+  chevron: '<path d="m6 9 6 6 6-6"/>',
 };
 
 function icon(name, color) {
@@ -142,7 +163,7 @@ document.querySelectorAll("[data-icon]").forEach((n) => n.replaceWith(icon(n.dat
 let toastTimer;
 // The clipboard API needs a secure page; a board opened from another device over plain
 // HTTP falls back.
-async function copyKey(text) {
+async function copyKey(text, message = tr("Copied {0}", text)) {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
@@ -153,7 +174,7 @@ async function copyKey(text) {
     document.execCommand("copy");
     area.remove();
   }
-  toast(tr("Copied {0}", text));
+  toast(message);
 }
 
 function toast(message) {
@@ -163,6 +184,47 @@ function toast(message) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.remove(), 3500);
 }
+
+// The in-page confirm(): resolves true when the primary button is chosen, false on Cancel, Escape or a backdrop click.
+let confirmDone = null;
+function askConfirm({ title, message = "", confirm = "OK", cancel = "Cancel", danger = false }) {
+  if (confirmDone) finishConfirm(false);
+  const back = document.activeElement;
+  const ok = $("#confirm-ok");
+  $("#confirm-title").textContent = title;
+  $("#confirm-message").textContent = message;
+  $("#confirm-message").hidden = !message;
+  $("#confirm-cancel").textContent = cancel;
+  ok.textContent = confirm;
+  ok.classList.toggle("danger", danger);
+  $("#confirm-dialog").hidden = false;
+  ok.focus();
+  return new Promise((resolve) => {
+    confirmDone = (yes) => {
+      $("#confirm-dialog").hidden = true;
+      if (back && back.focus && document.contains(back)) back.focus();
+      resolve(yes);
+    };
+  });
+}
+
+function finishConfirm(yes) {
+  const done = confirmDone;
+  confirmDone = null;
+  if (done) done(yes);
+}
+
+$("#confirm-ok").addEventListener("click", () => finishConfirm(true));
+$("#confirm-cancel").addEventListener("click", () => finishConfirm(false));
+// Keys stay in the dialog, so board shortcuts don't fire under it; Tab keeps to its two buttons.
+$("#confirm-dialog").addEventListener("keydown", (e) => {
+  e.stopPropagation();
+  if (e.key === "Enter") { e.preventDefault(); finishConfirm(document.activeElement !== $("#confirm-cancel")); }
+  else if (e.key === "Tab") {
+    e.preventDefault();
+    (document.activeElement === $("#confirm-ok") ? $("#confirm-cancel") : $("#confirm-ok")).focus();
+  }
+});
 
 // The names match PROJECT_COLORS in store.rs.
 const PROJECT_COLORS = {
@@ -183,21 +245,136 @@ function projectColor(slug) {
   return PROJECT_COLORS[projectColorName(slug)];
 }
 
+// Projects' own statuses, from the board.
+function customColumns() {
+  return (state.board && state.board.columns) || [];
+}
+
+function isCustom(status) {
+  return customColumns().some((c) => c.name === status);
+}
+
+// The statuses a task of `slug` may take, in board order: the base ones and the project's own.
+function projectStatuses(slug) {
+  if (!state.board) return [];
+  const mine = customColumns().filter((c) => c.project === slug).map((c) => c.name);
+  const statuses = state.board.statuses.filter((s) => !isCustom(s) || mine.includes(s));
+  // Viewing another project, its columns are not on the board; they still sit before done.
+  const missing = mine.filter((s) => !statuses.includes(s));
+  const done = statuses.indexOf("done");
+  if (missing.length) statuses.splice(done < 0 ? statuses.length : done, 0, ...missing);
+  return statuses;
+}
+
+// What a custom column is for, shown on its header.
+function columnDescription(status) {
+  const defs = customColumns().filter((c) => c.name === status && (state.project === "all" || c.project === state.project));
+  if (state.project !== "all") return defs.map((c) => c.description).join("\n");
+  return defs.map((c) => `${c.project}: ${c.description}`).join("\n");
+}
+
+// The icons a custom column may wear, in picker order, as the server allows them; person and chat reuse ICONS.
+const COLUMN_ICON_NAMES = ["dot", "eye", "flag", "star", "check", "bug", "rocket", "clock", "person", "chat", "shield", "beaker"];
+const COLUMN_ICONS = { person: "human", chat: "comment" };
+
+// The icon a custom column shows: this project's, or in All projects the first that has one.
+function columnIconName(status) {
+  const defs = customColumns().filter((c) => c.name === status);
+  const mine = defs.filter((c) => c.project === state.project);
+  const c = (mine.length ? mine : defs).find((d) => d.icon);
+  return c ? c.icon : null;
+}
+
+// A custom column's icon, small and in CUSTOM_COLOR; dot or none is the dotted ring.
+function columnIconMarkup(name) {
+  if (!name || name === "dot" || !COLUMN_ICON_NAMES.includes(name)) {
+    return `<svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="6" fill="none" stroke="${CUSTOM_COLOR}" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="0.01 3.14"/>` +
+      `<circle cx="7" cy="7" r="2.4" fill="${CUSTOM_COLOR}"/></svg>`;
+  }
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="${CUSTOM_COLOR}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[COLUMN_ICONS[name] || name]}</svg>`;
+}
+
+function columnIcon(name) {
+  const span = el("span", { class: "status-icon" });
+  span.innerHTML = columnIconMarkup(name);
+  return span;
+}
+
+// A column icon picker: a button wearing the picked icon that opens a grid of them; its value, "" for default, is the name.
+function iconPicker(button, value, onPick) {
+  button.type = "button";
+  button.classList.add("icon-pick");
+  button.setAttribute("aria-haspopup", "true");
+  button.setAttribute("aria-expanded", "false");
+  setIconPick(button, value);
+  button.addEventListener("click", () => openIconPick(button, onPick));
+  return button;
+}
+
+function setIconPick(button, value) {
+  button.value = value || "";
+  button.replaceChildren(columnIcon(button.value), icon("chevron"));
+}
+
+const ICON_GRID_COLUMNS = 5;
+
+function openIconPick(button, onPick) {
+  if (!toggleMenu(button)) return;
+  button.setAttribute("aria-expanded", "true");
+  const cells = ["", ...COLUMN_ICON_NAMES].map((n) => {
+    const label = n ? n[0].toUpperCase() + n.slice(1) : "Default";
+    const current = n === button.value;
+    return el("button", { type: "button", class: "icon-cell" + (current ? " current" : ""), role: "menuitemradio",
+                          title: label, "aria-label": label, "aria-checked": String(current),
+                          onclick: () => { closeMenu(); button.focus(); setIconPick(button, n); if (onPick) onPick(n); } },
+      columnIcon(n));
+  });
+  const menu = el("div", { class: "menu icon-grid", role: "menu", "aria-label": button.getAttribute("aria-label") }, cells);
+  menu.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.stopPropagation(); closeMenu(); button.focus(); return; }
+    const at = cells.indexOf(document.activeElement);
+    const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -ICON_GRID_COLUMNS, ArrowDown: ICON_GRID_COLUMNS }[e.key];
+    const to = e.key === "Home" ? 0 : e.key === "End" ? cells.length - 1 : step ? at + step : -1;
+    if (to < 0 || to >= cells.length) return;
+    e.preventDefault();
+    cells[to].focus();
+  });
+  document.body.append(menu);
+  const r = button.getBoundingClientRect();
+  const below = r.bottom + 4 + menu.offsetHeight <= innerHeight;
+  menu.style.top = `${below ? r.bottom + 4 : r.top - 4 - menu.offsetHeight}px`;
+  menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - menu.offsetWidth - 8))}px`;
+  (cells.find((c) => c.classList.contains("current")) || cells[0]).focus();
+}
+
+// Blocked and projects' own statuses sit off the todo-to-done progression, so the steps skip them.
 function statusStep(status) {
-  const { statuses } = state.board;
+  const statuses = state.board.statuses.filter((s) => s !== "blocked" && !isCustom(s));
   const i = statuses.indexOf(status);
   return i < 0 ? 0 : i - statuses.indexOf("todo");
 }
 
 function statusColor(status) {
+  if (status === "blocked") return BLOCKED_COLOR;
+  if (isCustom(status)) return CUSTOM_COLOR;
   const i = state.board ? statusStep(status) : 0;
   return STATUS_COLORS[Math.max(i, 0) % STATUS_COLORS.length];
 }
 
 function statusIcon(status) {
+  const color = statusColor(status);
+  const span = el("span", { class: "status-icon" });
+  if (status === "blocked") {
+    span.innerHTML = `<svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="6" fill="none" stroke="${color}" stroke-width="1.5"/>` +
+      `<path d="m2.8 2.8 8.4 8.4" stroke="${color}" stroke-width="1.5" stroke-linecap="round"/></svg>`;
+    return span;
+  }
+  if (isCustom(status)) {
+    span.innerHTML = columnIconMarkup(columnIconName(status));
+    return span;
+  }
   const step = statusStep(status), steps = statusStep("done");
   const f = Math.max(step, 0) / steps;
-  const color = statusColor(status);
   const dash = step < 0 ? ' stroke-dasharray="2.36 2.36"' : "";
   let inside = "";
   if (f >= 1) {
@@ -208,7 +385,6 @@ function statusIcon(status) {
     const x = (7 + r * Math.sin(a)).toFixed(2), y = (7 - r * Math.cos(a)).toFixed(2);
     inside = `<path d="M7 7L7 ${7 - r}A${r} ${r} 0 ${f > 0.5 ? 1 : 0} 1 ${x} ${y}Z" fill="${color}"/>`;
   }
-  const span = el("span", { class: "status-icon" });
   span.innerHTML = `<svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="6" fill="none" stroke="${color}" stroke-width="1.5"${dash}/>${inside}</svg>`;
   return span;
 }
@@ -236,18 +412,50 @@ function escapeHtml(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+function unescapeHtml(s) {
+  return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&amp;/g, "&");
+}
+
+function isProject(slug) {
+  return !!state.board && state.board.projects.some((p) => p.slug === slug);
+}
+
+// The hash that opens task `id` with the board kept on the project in view.
+function taskHref(id) {
+  return `#${encodeURIComponent(state.project)}/${id}`;
+}
+
+// A link to a task, or to one of its comments. It keeps the board on the project in view, and
+// following it adds a history entry (see the click handler), so Back returns to the previous task.
+function taskRef(id, comment, text) {
+  const href = `${taskHref(id)}${comment ? `/c${comment}` : ""}`;
+  return `<a class="ref" href="${href}" data-task="${id}"${comment ? ` data-comment="${comment}"` : ""}>${text}</a>`;
+}
+
 // Code spans, links and bare URLs are swapped for placeholders as soon as they are
 // rendered, so later rules never see, or rewrite, the HTML they produced. The input
 // is already HTML-escaped, so it holds no tags or raw quotes of its own.
-function inline(s) {
+// `project` is the slug a bare #12 refers to: the task being shown.
+function inline(s, project) {
   const saved = [];
   const keep = (html) => `\u0000${saved.push(html) - 1}\u0000`;
   const link = (url, text) => keep(`<a href="${url}" target="_blank" rel="noopener">${text}</a>`);
   s = s
     .replace(/\u0000/g, "")
     .replace(/`([^`]+)`/g, (_, code) => keep(`<code>${code}</code>`))
+    // Only the board's own images load: its Content Security Policy blocks others, which stay links.
+    .replace(/!\[([^\]]*)\]\((\/images\/[0-9a-f]{16}\.(?:png|jpg|gif|webp))\)/g,
+      (_, alt, src) => keep(`<a href="${src}" target="_blank" rel="noopener"><img src="${src}" alt="${alt || "Image"}"></a>`))
+    .replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)\u0000]+)\)/g, (_, alt, url) => link(url, alt || url))
     .replace(/\[([^\]]+)\]\(((?:https?:\/\/|mailto:|file:\/\/\/)[^\s)\u0000]+)\)/g, (_, text, url) => link(url, emphasis(text)))
-    .replace(/(^|[\s(])(https?:\/\/[^\s)\u0000]+)/g, (_, before, url) => before + link(url, url));
+    .replace(/(^|[\s(])(https?:\/\/[^\s)\u0000]+)/g, (_, before, url) => before + link(url, url))
+    .replace(/\[\[([a-z0-9][a-z0-9-]{0,31})\]\]/g, (all, slug) =>
+      isProject(slug) ? keep(`<a class="ref" href="#${slug}" data-project="${slug}">${slug}</a>`) : all)
+    .replace(/(^|[^\w#&;/-])([a-z0-9][a-z0-9-]{0,31})?#(\d+)(?:\/c(\d+))?(?![\w/])/g, (all, before, slug, id, comment) => {
+      const target = slug || project;
+      if (!target || !isProject(target)) return all;
+      return before + keep(taskRef(id, comment, all.slice(before.length)));
+    });
   const restore = (html) => html.replace(/\u0000(\d+)\u0000/g, (_, i) => restore(saved[i]));
   return restore(emphasis(s));
 }
@@ -268,12 +476,103 @@ function tableCells(line) {
 
 const TABLE_DELIMITER = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 
-function markdown(src) {
+// Syntax highlighting for fenced code: one small tokenizer per language, no library.
+// Each part is a non-capturing pattern, tried in order at each position: comments,
+// strings, the language's extras, numbers, then words, which keywords colour.
+function codeLanguage({ kw = "", comment = [], string = [], extra = [] }) {
+  const parts = [
+    ...comment.map((r) => [r, "c"]),
+    ...string.map((r) => [r, "s"]),
+    ...extra,
+    [String.raw`\b(?:0[xX][\da-fA-F_]+|0[bB][01_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\w*`, "n"],
+    [String.raw`[A-Za-z_$][\w$]*`, "w"],
+  ];
+  return {
+    kw: new Set(kw.split(/\s+/).filter(Boolean)),
+    re: new RegExp(parts.map(([r]) => `(${r})`).join("|"), "gm"),
+    cls: parts.map(([, c]) => c),
+  };
+}
+
+const C_COMMENTS = [String.raw`\/\/.*`, String.raw`\/\*[\s\S]*?\*\/`];
+const C_STRINGS = [String.raw`"(?:\\.|[^"\\\n])*"`, String.raw`'(?:\\.|[^'\\\n])*'`];
+const C_WORDS = "auto break case char const continue default do double else enum extern float for goto if inline int long " +
+  "register restrict return short signed sizeof static struct switch typedef union unsigned void volatile while bool true false NULL";
+const JS_WORDS = "break case catch class const continue debugger default delete do else export extends false finally for " +
+  "function if import in instanceof let new null return super switch this throw true try typeof undefined var void while " +
+  "with yield async await of static get set from as";
+const C_LIKE = { comment: C_COMMENTS, string: C_STRINGS, extra: [[String.raw`^[ \t]*#[ \t]*\w+`, "p"]] };
+const CODE_LANGUAGES = {};
+for (const [names, def] of [
+  [["c", "h"], codeLanguage({ ...C_LIKE, kw: C_WORDS })],
+  [["cpp", "c++", "cc", "cxx", "hpp"], codeLanguage({ ...C_LIKE, kw: C_WORDS + " class namespace template typename public " +
+    "private protected virtual override final new delete this operator using try catch throw nullptr constexpr noexcept " +
+    "friend mutable explicit static_cast dynamic_cast reinterpret_cast const_cast decltype concept requires co_await " +
+    "co_return co_yield std" })],
+  [["rust", "rs"], codeLanguage({
+    comment: C_COMMENTS,
+    string: [String.raw`b?r#*"[\s\S]*?"#*`, String.raw`b?"(?:\\.|[^"\\])*"`, String.raw`b?'(?:\\.|[^'\\])'`],
+    extra: [[String.raw`'[A-Za-z_]\w*`, "v"], [String.raw`#!?\[[^\]\n]*\]`, "p"], [String.raw`\b[a-z_]\w*!`, "p"]],
+    kw: "as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move " +
+      "mut pub ref return self Self static struct super trait true type unsafe use where while Option Some None Result Ok " +
+      "Err Box Vec String u8 u16 u32 u64 u128 usize i8 i16 i32 i64 i128 isize f32 f64 bool char str",
+  })],
+  [["python", "py"], codeLanguage({
+    comment: [String.raw`#.*`],
+    string: [String.raw`[rRbBfFuU]{0,2}(?:"""[\s\S]*?"""|'''[\s\S]*?''')`,
+      String.raw`[rRbBfFuU]{0,2}(?:"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')`],
+    extra: [[String.raw`^[ \t]*@[\w.]+`, "p"]],
+    kw: "False None True and as assert async await break class continue def del elif else except finally for from global " +
+      "if import in is lambda nonlocal not or pass raise return try while with yield self",
+  })],
+  [["asm", "assembly", "s", "nasm", "x86", "arm"], codeLanguage({
+    comment: [String.raw`;.*`, String.raw`\/\/.*`, String.raw`\/\*[\s\S]*?\*\/`, String.raw`^[ \t]*#.*`],
+    string: C_STRINGS,
+    extra: [
+      [String.raw`^[ \t]*[\w.$]+:`, "p"],
+      [String.raw`\.[A-Za-z_]\w*`, "p"],
+      [String.raw`%?\b(?:[re]?[abcd]x|[abcd][lh]|[re]?(?:si|di|sp|bp|ip)|r(?:[89]|1[0-5])[dwb]?|[xyz]mm\d{1,2}|[xw](?:[12]?\d|3[01])|lr|pc|fp)\b`, "v"],
+      [String.raw`^[ \t]*[A-Za-z][\w.]*\b(?!:)`, "k"],
+    ],
+  })],
+  [["bash", "sh", "shell", "zsh", "console"], codeLanguage({
+    comment: [String.raw`(?:^|[ \t])#.*`],
+    string: [String.raw`"(?:\\.|[^"\\])*"`, String.raw`'[^']*'`],
+    extra: [[String.raw`\$(?:\{[^}\n]*\}|\w+|[@#?$!*-])`, "v"]],
+    kw: "if then else elif fi for while until do done case esac in function return local export readonly declare set " +
+      "unset shift exit source alias echo cd test true false sudo",
+  })],
+  [["javascript", "js", "jsx", "mjs", "json"], codeLanguage({ comment: C_COMMENTS, string: [...C_STRINGS, "`(?:\\\\.|[^`\\\\])*`"], kw: JS_WORDS })],
+  [["typescript", "ts", "tsx"], codeLanguage({ comment: C_COMMENTS, string: [...C_STRINGS, "`(?:\\\\.|[^`\\\\])*`"],
+    kw: JS_WORDS + " interface type enum implements private public protected readonly declare namespace abstract number " +
+      "string boolean any unknown never" })],
+]) for (const name of names) CODE_LANGUAGES[name] = def;
+
+// `code` is raw text; the result is escaped HTML.
+function highlightCode(code, name) {
+  const def = CODE_LANGUAGES[(name || "").toLowerCase()];
+  if (!def) return escapeHtml(code);
+  let out = "", last = 0, m;
+  def.re.lastIndex = 0;
+  while ((m = def.re.exec(code))) {
+    if (!m[0]) { def.re.lastIndex++; continue; }
+    let cls = def.cls[m.findIndex((g, i) => i > 0 && g !== undefined) - 1];
+    if (cls === "w") cls = def.kw.has(m[0]) ? "k" : "";
+    out += escapeHtml(code.slice(last, m.index));
+    out += cls ? `<span class="tok-${cls}">${escapeHtml(m[0])}</span>` : escapeHtml(m[0]);
+    last = m.index + m[0].length;
+  }
+  return out + escapeHtml(code.slice(last));
+}
+
+// `project` is the slug that bare #12 references point into.
+function markdown(src, project) {
   const lines = escapeHtml(src.replace(/\r\n?/g, "\n")).split("\n");
   const out = [];
   let para = [];
   let list = null;
-  const flushPara = () => { if (para.length) out.push(`<p>${inline(para.join("<br>"))}</p>`); para = []; };
+  const md = (s) => inline(s, project);
+  const flushPara = () => { if (para.length) out.push(`<p>${md(para.join("<br>"))}</p>`); para = []; };
   const flushList = () => {
     if (!list) return;
     out.push(`<${list.type}>${list.items.join("")}</${list.type}>`);
@@ -282,15 +581,17 @@ function markdown(src) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     let m;
-    if ((m = line.match(/^\s*```/))) {
+    if ((m = line.match(/^\s*```\s*([\w+#.-]*)/))) {
       flushPara(); flushList();
       const code = [];
       while (++i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i]);
-      out.push(`<pre><code>${code.join("\n")}</code></pre>`);
+      const name = m[1].toLowerCase();
+      const cls = name ? ` class="language-${escapeHtml(name)}"` : "";
+      out.push(`<pre><code${cls}>${highlightCode(unescapeHtml(code.join("\n")), name)}</code></pre>`);
     } else if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
       flushPara(); flushList();
       const n = Math.min(m[1].length, 4);
-      out.push(`<h${n}>${inline(m[2])}</h${n}>`);
+      out.push(`<h${n}>${md(m[2])}</h${n}>`);
     } else if (line.includes("|") && TABLE_DELIMITER.test(lines[i + 1] || "")
                && tableCells(line).length === tableCells(lines[i + 1]).length) {
       // A table may follow a line of text directly, as on GitHub. Its body runs to the
@@ -299,7 +600,7 @@ function markdown(src) {
       const align = tableCells(lines[++i]).map((d) =>
         d.startsWith(":") ? (d.endsWith(":") ? "center" : "left") : d.endsWith(":") ? "right" : "");
       const row = (tag, cells) => "<tr>" + align.map((a, j) =>
-        `<${tag}${a ? ` style="text-align:${a}"` : ""}>${inline(cells[j] || "")}</${tag}>`).join("") + "</tr>";
+        `<${tag}${a ? ` style="text-align:${a}"` : ""}>${md(cells[j] || "")}</${tag}>`).join("") + "</tr>";
       const body = [];
       while (i + 1 < lines.length && lines[i + 1].includes("|")) body.push(row("td", tableCells(lines[++i])));
       out.push(`<div class="table"><table><thead>${row("th", tableCells(line))}</thead>`
@@ -311,20 +612,20 @@ function markdown(src) {
       list = list || { type, items: [] };
       const check = m[2].match(/^\[( |x|X)\]\s+(.*)$/);
       list.items.push(check
-        ? `<li class="check"><input type="checkbox" disabled ${check[1] === " " ? "" : "checked"}> ${inline(check[2])}</li>`
-        : `<li>${inline(m[2])}</li>`);
+        ? `<li class="check"><input type="checkbox" disabled ${check[1] === " " ? "" : "checked"}> ${md(check[2])}</li>`
+        : `<li>${md(m[2])}</li>`);
     } else if ((m = line.match(/^&gt;\s?(.*)$/))) {
       flushPara(); flushList();
       const quote = [m[1]];
       while (i + 1 < lines.length && (m = lines[i + 1].match(/^&gt;\s?(.*)$/))) { quote.push(m[1]); i++; }
-      out.push(`<blockquote>${inline(quote.join("<br>"))}</blockquote>`);
+      out.push(`<blockquote>${md(quote.join("<br>"))}</blockquote>`);
     } else if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
       flushPara(); flushList();
       out.push("<hr>");
     } else if (line.trim() === "") {
       flushPara(); flushList();
     } else if (list && /^\s{2,}\S/.test(line)) {
-      list.items[list.items.length - 1] = list.items[list.items.length - 1].replace(/<\/li>$/, ` ${inline(line.trim())}</li>`);
+      list.items[list.items.length - 1] = list.items[list.items.length - 1].replace(/<\/li>$/, ` ${md(line.trim())}</li>`);
     } else {
       flushList();
       para.push(line);
@@ -332,6 +633,411 @@ function markdown(src) {
   }
   flushPara(); flushList();
   return out.join("");
+}
+
+// The in-place editor for descriptions and comments renders Markdown where it is typed, as Obsidian's
+// Live Preview does. Its text is always exactly the Markdown: rendering only wraps that text in
+// styled spans, and markers (`**`, `#`, `](url)` and so on) get class "mk", which CSS hides on lines
+// away from the caret. So a caret position is just an offset into the text.
+const mdMarker = (s) => s ? `<span class="mk">${escapeHtml(s)}</span>` : "";
+
+// One line's inline Markdown as HTML, with every character of `raw` kept, in order. The rules, and
+// their order, are inline()'s. Board images found are pushed onto `images`.
+function editorInline(raw, project, images) {
+  if (raw.includes("\u0000")) return escapeHtml(raw);
+  const saved = [];
+  const keep = (html) => `\u0000${saved.push(html) - 1}\u0000`;
+  // The input is escaped already.
+  const mk = (s) => s ? keep(`<span class="mk">${s}</span>`) : "";
+  const wrap = (open, s, close) => mk(open) + keep(s) + mk(close);
+  const emph = (s) => s
+    .replace(/\*\*(.+?)\*\*/g, (_, t) => wrap("**", `<strong>${emph(t)}</strong>`, "**"))
+    .replace(/(^|[^\w*])\*(?!\s)(.+?)\*(?!\w)/g, (_, before, t) => before + wrap("*", `<em>${emph(t)}</em>`, "*"))
+    .replace(/(^|[^\w])_(?!\s)(.+?)_(?!\w)/g, (_, before, t) => before + wrap("_", `<em>${emph(t)}</em>`, "_"))
+    .replace(/~~(.+?)~~/g, (_, t) => wrap("~~", `<del>${emph(t)}</del>`, "~~"));
+  const s = escapeHtml(raw)
+    .replace(/`([^`]+)`/g, (_, code) => wrap("`", `<code>${code}</code>`, "`"))
+    .replace(/!\[([^\]]*)\]\((\/images\/[0-9a-f]{16}\.(?:png|jpg|gif|webp))\)/g, (all, alt, src) => {
+      images.push({ src, alt });
+      return mk(all);
+    })
+    .replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)\u0000]+)\)/g, (_, alt, url) =>
+      alt ? wrap("![", `<span class="a">${alt}</span>`, `](${url})`) : wrap("![](", `<span class="a">${url}</span>`, ")"))
+    .replace(/\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^\s)\u0000]+)\)/g, (_, text, url) =>
+      wrap("[", `<span class="a">${emph(text)}</span>`, `](${url})`))
+    .replace(/(^|[\s(])(https?:\/\/[^\s)\u0000]+)/g, (_, before, url) => before + keep(`<span class="a">${url}</span>`))
+    .replace(/\[\[([a-z0-9][a-z0-9-]{0,31})\]\]/g, (all, slug) =>
+      isProject(slug) ? wrap("[[", `<span class="ref">${slug}</span>`, "]]") : all)
+    .replace(/(^|[^\w#&;/-])([a-z0-9][a-z0-9-]{0,31})?#(\d+)(?:\/c(\d+))?(?![\w/])/g, (all, before, slug) => {
+      const target = slug || project;
+      if (!target || !isProject(target)) return all;
+      return before + keep(`<span class="ref">${all.slice(before.length)}</span>`);
+    });
+  const restore = (html) => html.replace(/\u0000(\d+)\u0000/g, (_, i) => restore(saved[i]));
+  return restore(emph(s));
+}
+
+// Each line of `text` as { cls, html }: `cls` names the line's kind for CSS, and the text of `html`
+// is the line, exactly. Fenced code is coloured line by line in its fence's language.
+function editorLines(text, project) {
+  let fence = null;
+  return text.split("\n").map((raw) => {
+    const images = [];
+    const inl = (s) => editorInline(s, project, images);
+    let m, cls = "", html;
+    if ((m = raw.match(/^(\s*```\s*)([\w+#.-]*)(.*)$/))) {
+      if (fence === null) {
+        fence = m[2].toLowerCase();
+        cls = "fence open";
+        html = mdMarker(m[1]) + (m[2] ? `<span class="lang">${escapeHtml(m[2])}</span>` : "") + mdMarker(m[3]);
+      } else {
+        fence = null;
+        cls = "fence close";
+        html = mdMarker(raw);
+      }
+    } else if (fence !== null) {
+      cls = "code";
+      html = highlightCode(raw, fence);
+    } else if ((m = raw.match(/^(#{1,6})(\s+)(.*)$/))) {
+      cls = "h" + Math.min(m[1].length, 4);
+      html = mdMarker(m[1] + m[2]) + inl(m[3]);
+    } else if ((m = raw.match(/^(\s*)(?:([-*+])|(\d+[.)]))(\s+)(.*)$/))) {
+      const check = m[5].match(/^(\[( |x|X)\]\s+)(.*)$/);
+      const bullet = '<span class="bul" contenteditable="false"></span>';
+      cls = (m[3] ? "ol" : "ul") + (check ? (check[2] === " " ? " task" : " task done") : "");
+      const body = inl(check ? check[3] : m[5]);
+      html = escapeHtml(m[1]) + (m[3]
+        ? escapeHtml(m[3] + m[4]) + (check ? bullet + mdMarker(check[1]) : "")
+        : bullet + mdMarker(m[2] + m[4] + (check ? check[1] : ""))) + body;
+    } else if ((m = raw.match(/^(>\s?)(.*)$/))) {
+      cls = "quote";
+      html = mdMarker(m[1]) + inl(m[2]);
+    } else if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(raw)) {
+      cls = "hr";
+      html = mdMarker(raw);
+    } else {
+      html = inl(raw);
+    }
+    for (const i of images) html += `<img src="${i.src}" alt="${i.alt || "Image"}" contenteditable="false">`;
+    return { cls, html };
+  });
+}
+
+// Turns `ed`, an empty contenteditable div, into the in-place editor. It keeps a textarea's `value`
+// and setSelectionRange(), so the code around it treats it as one. Its children are one div per line
+// (a <br> in an empty one); browsers' edits can leave other shapes, which read() copes with.
+function mdEditor(ed) {
+  let text = "", history = [{ text, sel: null }], at = 0, group = null, composing = false, quiet = false;
+  const focused = () => document.activeElement === ed;
+  const lineOf = (o) => text.slice(0, o).split("\n").length - 1;
+
+  // The text the DOM holds now, and for each top-level node the offset where its line starts and
+  // that line's first node. Divs are lines; text and inline nodes between them form lines that a <br> ends.
+  function read() {
+    const lines = [], info = new Map();
+    let cur = null, first = null, start = 0;
+    const close = () => { lines.push(cur || ""); start += (cur || "").length + 1; cur = null; };
+    for (const n of ed.childNodes) {
+      if (n.nodeName === "DIV" || n.nodeName === "P") {
+        if (cur !== null) close();
+        info.set(n, { start, first: n });
+        cur = n.textContent;
+        close();
+        continue;
+      }
+      if (cur === null) { cur = ""; first = n; }
+      info.set(n, { start, first });
+      if (n.nodeName === "BR") close();
+      else cur += n.textContent;
+    }
+    if (cur !== null) close();
+    return { value: lines.join("\n"), info };
+  }
+
+  // A DOM point as an offset into the text read() returned.
+  function offsetOf(r, node, off) {
+    let top = node;
+    if (node === ed) {
+      if (off >= ed.childNodes.length) return r.value.length;
+      top = ed.childNodes[off];
+    }
+    while (top.parentNode !== ed) top = top.parentNode;
+    const line = r.info.get(top);
+    const range = document.createRange();
+    range.setStartBefore(line.first);
+    range.setEnd(node, off);
+    return Math.min(line.start + range.toString().length, r.value.length);
+  }
+
+  // The selection as { start, end } offsets (anchor and focus, so end may come first), or null.
+  function getSel(r) {
+    const sel = getSelection();
+    if (!sel.rangeCount || !ed.contains(sel.anchorNode) || !ed.contains(sel.focusNode)) return null;
+    return { start: offsetOf(r, sel.anchorNode, sel.anchorOffset), end: offsetOf(r, sel.focusNode, sel.focusOffset) };
+  }
+
+  // The DOM point at offset `o` of the rendered text.
+  function pointAt(o) {
+    const lines = text.split("\n");
+    if (!ed.children.length) return [ed, 0];
+    let i = 0;
+    while (i < lines.length - 1 && o > lines[i].length) { o -= lines[i].length + 1; i++; }
+    const line = ed.children[Math.min(i, ed.children.length - 1)];
+    o = Math.max(0, Math.min(o, lines[i].length));
+    const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+    let last = null;
+    for (let t; (t = walker.nextNode()); last = t) {
+      if (o <= t.length) return [t, o];
+      o -= t.length;
+    }
+    return last ? [last, last.length] : [line, 0];
+  }
+
+  function setSel(sel) {
+    const a = pointAt(sel.start), f = pointAt(sel.end);
+    getSelection().setBaseAndExtent(a[0], a[1], f[0], f[1]);
+  }
+
+  function reveal(sel) {
+    const node = pointAt(sel.end)[0];
+    const box = node.nodeType === 1 ? node : node.parentElement;
+    if (box.scrollIntoViewIfNeeded) box.scrollIntoViewIfNeeded(false);
+    else box.scrollIntoView({ block: "nearest" });
+  }
+
+  // Lines the caret is on, or a selection touches, show their markers; the rest show rendered.
+  function mark(sel) {
+    let from = -1, to = -1;
+    if (sel && focused()) {
+      from = lineOf(Math.min(sel.start, sel.end));
+      to = lineOf(Math.max(sel.start, sel.end));
+    }
+    [...ed.children].forEach((line, i) => {
+      const cls = "ln" + (line._cls || "") + (i < from || i > to ? " rendered" : "");
+      if (line.className !== cls) line.className = cls;
+    });
+  }
+
+  // Brings the DOM in line with `text`, keeping the lines that are already right, so spellcheck
+  // and the browser's own state survive. With `sel`, the selection is put back where it was.
+  function paint(sel) {
+    const rows = text ? editorLines(text, panelTask && panelTask.project) : [];
+    rows.forEach((row, i) => {
+      const old = ed.childNodes[i];
+      if (old && old.nodeName === "DIV" && old._html === row.html && old._dom === old.innerHTML) {
+        old._cls = row.cls ? " " + row.cls : "";
+        return;
+      }
+      const line = document.createElement("div");
+      line.innerHTML = row.html || "<br>";
+      line._html = row.html;
+      line._dom = line.innerHTML;
+      line._cls = row.cls ? " " + row.cls : "";
+      if (old) ed.replaceChild(line, old);
+      else ed.append(line);
+    });
+    while (ed.childNodes.length > rows.length) ed.lastChild.remove();
+    if (sel && focused()) setSel(sel);
+    mark(sel);
+  }
+
+  // Typing merges into one undo step until it pauses, changes kind or passes a space.
+  function record(kind, sel) {
+    const now = Date.now();
+    if (text === history[at].text) { history[at].sel = sel; return; }
+    const merge = group && kind !== "other" && now - group.time < 1500 &&
+      (group.kind === kind || (group.kind === "type" && kind === "space"));
+    if (merge) history[at] = { text, sel };
+    else {
+      history.splice(at + 1);
+      history.push({ text, sel });
+      if (history.length > 200) history.shift();
+      at = history.length - 1;
+    }
+    group = { kind, time: now };
+  }
+
+  // Tells the page's own input listeners (the send button, for one) that the text changed.
+  function changed() {
+    quiet = true;
+    ed.dispatchEvent(new Event("input", { bubbles: true }));
+    quiet = false;
+  }
+
+  function sync(e) {
+    const r = read();
+    const sel = getSel(r);
+    text = r.value;
+    const type = (e && e.inputType) || "";
+    const kind = type === "insertText" ? (/^\s+$/.test(e.data || "") ? "space" : "type")
+      : type.startsWith("delete") && !type.includes("ByCut") && !type.includes("ByDrag") ? type : "other";
+    record(kind, sel);
+    paint(sel);
+  }
+
+  // Sets the text through the model, rather than the browser's editing, as one undo step.
+  function put(value, sel, kind) {
+    text = value;
+    record(kind, sel);
+    group = null;
+    paint(sel);
+    reveal(sel);
+    changed();
+  }
+
+  // Puts `str` in place of the selection.
+  function insert(str) {
+    const r = read();
+    const sel = getSel(r) || { start: r.value.length, end: r.value.length };
+    const from = Math.min(sel.start, sel.end), to = Math.max(sel.start, sel.end);
+    const caret = { start: from + str.length, end: from + str.length };
+    put(r.value.slice(0, from) + str + r.value.slice(to), caret, str === "\n" ? "line" : "other");
+  }
+
+  function go(to) {
+    if (to < 0 || to >= history.length) return;
+    at = to;
+    group = null;
+    text = history[at].text;
+    const sel = history[at].sel || { start: text.length, end: text.length };
+    paint(sel);
+    reveal(sel);
+    changed();
+  }
+
+  ed.addEventListener("compositionstart", () => { composing = true; });
+  ed.addEventListener("compositionend", () => { composing = false; sync(null); });
+  ed.addEventListener("input", (e) => {
+    if (quiet || composing || e.isComposing) return;
+    sync(e);
+  });
+  ed.addEventListener("beforeinput", (e) => {
+    if (e.isComposing) return;
+    const type = e.inputType;
+    if (type === "historyUndo") { e.preventDefault(); go(at - 1); }
+    else if (type === "historyRedo") { e.preventDefault(); go(at + 1); }
+    else if (type === "insertParagraph" || type === "insertLineBreak") { e.preventDefault(); insert("\n"); }
+    else if (type.startsWith("format")) e.preventDefault();
+  });
+  // Ctrl/Cmd+Enter, Escape and Tab are left to the page's own listeners.
+  ed.addEventListener("keydown", (e) => {
+    // 229: a key an input method is handling, like the Enter that ends a composition in Safari.
+    if (composing || e.isComposing || e.keyCode === 229) return;
+    const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
+    if (e.key === "Enter" && !mod) { e.preventDefault(); insert("\n"); }
+    else if (mod && !e.altKey && k === "z") { e.preventDefault(); go(at + (e.shiftKey ? 1 : -1)); }
+    else if (e.ctrlKey && !e.altKey && !e.shiftKey && k === "y") { e.preventDefault(); go(at + 1); }
+    // No bold, italic or underline markup: the text stays plain Markdown.
+    else if (mod && !e.altKey && (k === "b" || k === "i" || k === "u")) e.preventDefault();
+  });
+  // Images are attachImages()'s, in the page's own paste listener; text goes in as plain text.
+  ed.addEventListener("paste", (e) => {
+    if (!e.clipboardData || imagesIn(e.clipboardData).length) return;
+    e.preventDefault();
+    insert(e.clipboardData.getData("text/plain").replace(/\r\n?/g, "\n"));
+  });
+  // Copies the Markdown itself: the browser's own copy would drop hidden markers and line breaks.
+  for (const type of ["copy", "cut"]) {
+    ed.addEventListener(type, (e) => {
+      const sel = getSel(read());
+      if (!sel || sel.start === sel.end || !e.clipboardData) return;
+      e.preventDefault();
+      e.clipboardData.setData("text/plain", text.slice(Math.min(sel.start, sel.end), Math.max(sel.start, sel.end)));
+      if (type === "cut") insert("");
+    });
+  }
+  // Dragged text is the Markdown too, and a drop goes in as plain text, moving it when dragged from here.
+  let dragged = null;
+  ed.addEventListener("dragstart", (e) => {
+    const sel = getSel(read());
+    dragged = sel && sel.start !== sel.end ? { from: Math.min(sel.start, sel.end), to: Math.max(sel.start, sel.end) } : null;
+    if (dragged && e.dataTransfer) e.dataTransfer.setData("text/plain", text.slice(dragged.from, dragged.to));
+  });
+  ed.addEventListener("dragend", () => { dragged = null; });
+  // Image drops are the drop zone's, around the editor.
+  ed.addEventListener("drop", (e) => {
+    const transfer = e.dataTransfer;
+    if (!transfer || imagesIn(transfer).length) return;
+    const move = dragged;
+    dragged = null;
+    const str = move ? text.slice(move.from, move.to) : transfer.getData("text/plain").replace(/\r\n?/g, "\n");
+    if (!str) return;
+    e.preventDefault();
+    const point = pointFromXY(e.clientX, e.clientY);
+    let value = text, o = point && ed.contains(point[0]) ? offsetOf(read(), point[0], point[1]) : text.length;
+    if (move) {
+      if (o >= move.from && o <= move.to) return;
+      value = value.slice(0, move.from) + value.slice(move.to);
+      if (o > move.to) o -= move.to - move.from;
+    }
+    ed.focus();
+    put(value.slice(0, o) + str + value.slice(o), { start: o, end: o + str.length }, "other");
+  });
+  document.addEventListener("selectionchange", () => {
+    if (composing || !focused()) return;
+    const r = read();
+    if (r.value !== text) return;
+    const sel = getSel(r);
+    if (!sel) return;
+    // Undo puts the caret back where it was just before the edit; moving it starts a new step.
+    const now = history[at].sel;
+    if (!now || now.start !== sel.start || now.end !== sel.end) { history[at].sel = sel; group = null; }
+    mark(sel);
+  });
+  ed.addEventListener("blur", () => mark(null));
+
+  Object.defineProperty(ed, "value", {
+    get: () => text,
+    set: (v) => {
+      const sel = focused() ? getSel(read()) : null;
+      text = String(v == null ? "" : v).replace(/\r\n?/g, "\n");
+      history = [{ text, sel: null }];
+      at = 0;
+      group = null;
+      const clamp = (o) => Math.min(o, text.length);
+      paint(sel && { start: clamp(sel.start), end: clamp(sel.end) });
+    },
+  });
+  ed.setSelectionRange = (start, end = start) => {
+    const sel = { start: Math.min(start, text.length), end: Math.min(end, text.length) };
+    setSel(sel);
+    mark(sel);
+  };
+  paint(null);
+}
+
+// The DOM point, [node, offset], under a viewport position, or null.
+function pointFromXY(x, y) {
+  if (document.caretPositionFromPoint) {
+    const p = document.caretPositionFromPoint(x, y);
+    return p && p.offsetNode ? [p.offsetNode, p.offset] : null;
+  }
+  if (document.caretRangeFromPoint) {
+    const r = document.caretRangeFromPoint(x, y);
+    return r ? [r.startContainer, r.startOffset] : null;
+  }
+  return null;
+}
+
+// Where in the Markdown `src` a click on its rendered view lands: the clicked text is looked up in the
+// source after as many earlier copies of it as the view shows before it. Null when it can't tell.
+function sourceOffsetAt(view, x, y, src) {
+  const point = pointFromXY(x, y);
+  if (!point) return null;
+  const [node, off] = point;
+  if (node.nodeType !== 3 || !node.data || !view.contains(node)) return null;
+  const range = document.createRange();
+  range.setStart(view, 0);
+  range.setEnd(node, 0);
+  const before = range.toString(), word = node.data;
+  let seen = 0;
+  for (let i = before.indexOf(word); i >= 0; i = before.indexOf(word, i + word.length)) seen++;
+  let found = -word.length;
+  for (let k = 0; k <= seen; k++) {
+    found = src.indexOf(word, found + word.length);
+    if (found < 0) return null;
+  }
+  return found + off;
 }
 
 // Loads can overlap (a poll, a drop, an edit); only the newest one may render,
@@ -369,9 +1075,32 @@ function updateHash() {
 function readHash() {
   let hash = location.hash.slice(1);
   try { hash = decodeURIComponent(hash); } catch {}
-  const [slug, task] = hash.split("/");
-  return { slug: slug || null, task: Number(task) || null };
+  const [slug, task, comment] = hash.split("/");
+  return { slug: slug || null, task: Number(task) || null, comment: Number((comment || "").replace(/^c/, "")) || null };
 }
+
+// The comment a link pointed at, scrolled to once its task shows.
+let focusComment = null;
+
+function showFocusedComment() {
+  const target = focusComment && document.getElementById(`c${focusComment}`);
+  if (!target) return;
+  focusComment = null;
+  target.scrollIntoView({ block: "center" });
+  target.classList.add("flash");
+  setTimeout(() => target.classList.remove("flash"), 2000);
+}
+
+// Task and project links change the hash themselves, which adds a history entry; the
+// hashchange handler then opens them. Only a link to where you already are needs help.
+document.addEventListener("click", (e) => {
+  const ref = e.target.closest("a.ref");
+  if (!ref || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey) return;
+  if (ref.getAttribute("href") !== location.hash) return;
+  e.preventDefault();
+  focusComment = Number(ref.dataset.comment) || null;
+  showFocusedComment();
+});
 
 function setProject(slug) {
   state.project = slug;
@@ -394,16 +1123,19 @@ function renderNav() {
   if (movingProject) return;
   const { projects } = state.board;
   const open = projects.reduce((n, p) => n + p.open, 0);
-  const link = (slug, name, count, glyph) =>
-    el("a", { href: "#" + slug, title: name, draggable: "false", class: state.project === slug ? "active" : null,
+  const link = (slug, name, count, glyph, template) =>
+    el("a", { href: "#" + slug, title: template ? tr("{0} · template", name) : name, draggable: "false",
+              class: state.project === slug ? "active" : null,
               onclick: (e) => { e.preventDefault(); setProject(slug); } },
       glyph,
       el("span", { class: "name" }, name),
+      template ? el("span", { class: "template-mark", title: "Template" }, icon("template")) : null,
       el("span", { class: "count" }, String(count)));
   const item = (p) => renaming && renaming.slug === p.slug
     ? el("div", { class: "item renaming" }, icon("folder", projectColor(p.slug)), renaming.input)
-    : el("div", { class: "item" + (state.menu === p.slug ? " menu-open" : ""), draggable: "true", "data-slug": p.slug },
-    link(p.slug, p.name, p.open, icon("folder", projectColor(p.slug))),
+    : el("div", { class: "item" + (state.menu === p.slug ? " menu-open" : "") + (p.template ? " template" : ""),
+                  draggable: "true", "data-slug": p.slug },
+    link(p.slug, p.name, p.open, icon("folder", projectColor(p.slug)), p.template),
     el("button", { class: "more", title: tr("More"), "aria-label": tr("More for {0}", p.name), "aria-haspopup": "menu",
                    onclick: (e) => toggleProjectMenu(p, e.currentTarget) }, icon("more")));
   $("#nav").replaceChildren(
@@ -442,11 +1174,17 @@ function toggleProjectMenu(p, button) {
   };
   drawRepos(p.repos);
   const rename = el("button", { onclick: () => startRename(p) }, icon("rename"), tr("Rename"));
+  const columns = el("button", { onclick: () => { closeMenu(); openColumns(p); } }, icon("columns"), tr("Columns"));
+  const template = el("button", { onclick: () => { closeMenu(); setTemplate(p, !p.template); } },
+    icon("template"), p.template ? tr("Stop using as template") : tr("Use as template"));
+  const fromTemplate = p.template
+    ? el("button", { onclick: () => { closeMenu(); showNewProject(p.slug); } }, icon("newProject"), tr("New project from this template"))
+    : null;
   const remove = el("button", { class: "danger", onclick: () => { closeMenu(); deleteProject(p); } },
     icon("trash"), tr("Delete project"));
   const menu = el("div", { class: "menu", role: "menu", tabindex: "-1" },
     el("div", { class: "label" }, tr("Color")), swatches, el("div", { class: "label" }, tr("Repos")), repos,
-    el("div", { class: "sep" }), rename, remove);
+    el("div", { class: "sep" }), rename, columns, template, fromTemplate, remove);
   document.body.append(menu);
   const r = button.getBoundingClientRect();
   const below = r.bottom + 4 + menu.offsetHeight <= innerHeight;
@@ -454,6 +1192,14 @@ function toggleProjectMenu(p, button) {
   menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - menu.offsetWidth - 8))}px`;
   // Focus the menu itself, so Tab reaches its buttons without one looking selected.
   menu.focus();
+}
+
+async function setTemplate(p, template) {
+  try {
+    await api("PATCH", `/projects/${encodeURIComponent(p.slug)}`, { template });
+    await loadBoard();
+    toast(template ? `${p.slug} is now a template` : `${p.slug} is no longer a template`);
+  } catch (err) { toast(err.message); }
 }
 
 let renaming = null;
@@ -545,11 +1291,12 @@ function closeMenu() {
   $("#settings").classList.remove("open");
   $("#network-menu").hidden = true;
   $("#network").classList.remove("open");
+  document.querySelectorAll(".icon-pick[aria-expanded=true]").forEach((b) => b.setAttribute("aria-expanded", "false"));
 }
 
 // A click on a menu's own button is left to toggle it.
 document.addEventListener("mousedown", (e) => {
-  if (!e.target.closest(".menu, .nav .more, #settings, #network, #network-menu")) closeMenu();
+  if (!e.target.closest(".menu, .nav .more, #settings, #network, #network-menu, .icon-pick")) closeMenu();
 });
 document.addEventListener("mousedown", (e) => {
   if (state.task && e.button === 0 && !e.target.closest("#panel, .card, .menu, .search-dialog")) closeTask();
@@ -557,6 +1304,7 @@ document.addEventListener("mousedown", (e) => {
 window.addEventListener("resize", closeMenu);
 window.addEventListener("blur", closeMenu);
 $("#nav").addEventListener("scroll", closeMenu);
+$("#columns-list").addEventListener("scroll", closeMenu);
 
 function currentProject() {
   return state.board.projects.find((p) => p.slug === state.project) || null;
@@ -587,6 +1335,8 @@ function renderHeader() {
   header.replaceChildren(
     el("h1", {}, p.name),
     el("span", { class: "sub" }, open(p.open)),
+    p.template ? el("span", { class: "sub template-note", title: "New projects can start from this one" },
+      icon("template"), "Template · agents don't take these tasks") : null,
     ...p.repos.map((r) => el("a", { class: "repo-link", href: `https://github.com/${r}`, target: "_blank", rel: "noopener",
                                     title: tr("Open {0} on GitHub", r) }, icon("github"), r)),
   );
@@ -594,13 +1344,112 @@ function renderHeader() {
 
 async function deleteProject(p) {
   const tasks = p.total ? tr(" and its {0}, with their comments", plural(p.total, "task")) : "";
-  if (!confirm(tr("Delete project {0}{1}? This cannot be undone.", p.slug, tasks))) return;
+  if (!await askConfirm({ title: tr("Delete project?"), message: tr("Delete project {0}{1}? This cannot be undone.", p.slug, tasks),
+                          confirm: tr("Delete"), danger: true })) return;
   try {
     await api("DELETE", `/projects/${encodeURIComponent(p.slug)}`);
     if (panelTask?.project === p.slug) { fresh = null; closeTask(); }
     if (state.project === p.slug) setProject("all"); else loadBoard();
   } catch (err) { toast(err.message); }
 }
+
+// The project whose own columns the columns dialog manages.
+let columnsProject = null;
+
+// The add form's picker; POST sends its value.
+iconPicker($("#column-icon"), "");
+
+function resetColumnForm() {
+  $("#column-form").reset();
+  setIconPick($("#column-icon"), "");
+}
+
+function openColumns(p) {
+  columnsProject = p.slug;
+  $("#columns-title").textContent = `Columns of ${p.name}`;
+  resetColumnForm();
+  $("#columns-list").replaceChildren();
+  $("#column-after").replaceChildren();
+  $("#columns-dialog").hidden = false;
+  $("#column-form [name=name]").focus();
+  drawColumns();
+}
+
+function closeColumns() {
+  columnsProject = null;
+  resetColumnForm();
+  $("#columns-dialog").hidden = true;
+}
+
+// The board on screen may show another project, so ask for this one's columns in order.
+async function drawColumns() {
+  const slug = columnsProject;
+  if (!slug) return;
+  let board;
+  try {
+    board = await api("GET", "/board?project=" + encodeURIComponent(slug));
+  } catch (err) { toast(err.message); return; }
+  if (slug !== columnsProject) return;
+  const mine = (board.columns || []).filter((c) => c.project === slug);
+  $("#columns-list").replaceChildren(...(mine.length ? mine.map((c) =>
+    el("div", { class: "account" },
+      columnIcon(c.icon),
+      el("span", { class: "text" }, el("b", {}, c.name),
+        el("span", {}, `${c.description} · after ${c.after}`)),
+      columnIconPick(slug, c),
+      el("button", { class: "ghost danger", type: "button", title: "Remove column", "aria-label": `Remove the ${c.name} column`,
+                     onclick: () => removeColumn(slug, c) }, icon("trash"))))
+    : [el("div", { class: "note" }, "No columns of its own yet")]));
+  const after = $("#column-after");
+  const picked = after.value;
+  const options = board.statuses.filter((s) => s !== "done");
+  after.replaceChildren(...options.map((s) => el("option", { value: s }, `After ${s}`)));
+  after.value = options.includes(picked) ? picked : options.includes("review") ? "review" : options[options.length - 1] || "";
+}
+
+// An existing column's icon picker; the row's leading icon follows it live.
+function columnIconPick(slug, c) {
+  const button = el("button", { "aria-label": `Icon of the ${c.name} column`, title: "Icon" });
+  return iconPicker(button, c.icon, async (name) => {
+    const row = button.closest(".account");
+    if (row) row.firstChild.replaceWith(columnIcon(name));
+    try {
+      await api("PATCH", `/projects/${encodeURIComponent(slug)}/statuses/${encodeURIComponent(c.name)}`, { icon: name });
+      await loadBoard();
+    } catch (err) { toast(err.message); }
+    drawColumns();
+  });
+}
+
+async function removeColumn(slug, c) {
+  if (!await askConfirm({ title: "Remove column?", message: `Remove the ${c.name} column from ${slug}?`,
+                          confirm: "Remove", danger: true })) return;
+  try {
+    await api("DELETE", `/projects/${encodeURIComponent(slug)}/statuses/${encodeURIComponent(c.name)}`);
+    await loadBoard();
+    drawColumns();
+  } catch (err) { toast(err.message); }
+}
+
+$("#column-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const slug = columnsProject;
+  if (!slug) return;
+  const form = e.target;
+  const name = $("[name=name]", form), description = $("[name=description]", form);
+  try {
+    await api("POST", `/projects/${encodeURIComponent(slug)}/statuses`,
+              { name: name.value.trim(), description: description.value.trim(), after: $("#column-after").value || undefined,
+                icon: $("#column-icon").value || undefined });
+    name.value = "";
+    description.value = "";
+    setIconPick($("#column-icon"), "");
+    await loadBoard();
+    await drawColumns();
+    name.focus();
+  } catch (err) { toast(err.message); }
+});
+$("#columns-close").addEventListener("click", closeColumns);
 
 function renderColumns() {
   const { statuses, projects, tasks } = state.board;
@@ -619,8 +1468,10 @@ function renderColumns() {
   }
   columns.style.display = "";
 
-  // Build the columns once per layout so a refresh never wipes a half-typed task.
-  const layout = statuses.join(",") + "|" + state.project;
+  // Build the columns once per layout so a refresh never wipes a half-typed task. A new
+  // column icon changes the layout too, so headers redraw with it.
+  const icons = (state.board.columns || []).map((c) => c.icon || "").join(",");
+  const layout = statuses.join(",") + "|" + state.project + "|" + icons;
   if (state.layout !== layout) {
     state.layout = layout;
     columns.replaceChildren(...statuses.map((status) => {
@@ -643,6 +1494,7 @@ function renderColumns() {
   // During a drag the DOM is being moved by hand; refresh once it ends.
   if (state.dragging || state.sweeping || state.settling) return;
   const all = state.project === "all";
+  const progress = subtaskProgress(tasks);
   const humanOnly = isHumanOnly();
   const query = filterQuery();
   $("#filter").classList.toggle("on", query.length > 0);
@@ -654,7 +1506,7 @@ function renderColumns() {
          filtered ? tr("Show older") : tr("Show {0} older", hiddenDone))
     : null;
   if (inList) {
-    renderList(tasks.filter((t) => !humanOnly || t.human), all, more);
+    renderList(tasks.filter((t) => !humanOnly || t.human), all, more, progress);
   } else {
     for (const status of statuses) {
       const col = columns.querySelector(`[data-status="${CSS.escape(status)}"]`);
@@ -662,7 +1514,11 @@ function renderColumns() {
       const last = status === statuses[statuses.length - 1];
       const count = mine.length + (!last || filtered ? 0 : hiddenDone);
       col.querySelector("h2 .count").textContent = count ? String(count) : "";
-      col.querySelector(".cards").replaceChildren(...(last && more ? [more] : []), ...mine.map((t) => card(t, all)));
+      const description = columnDescription(status);
+      if (description) col.querySelector("h2").title = description;
+      else col.querySelector("h2").removeAttribute("title");
+      col.querySelector(".cards").replaceChildren(...(last && more ? [more] : []),
+        ...mine.map((t) => card(t, all, progress.get(key(t)))));
     }
   }
   highlight("filter", inList ? $("#list") : columns, wordsOf(query));
@@ -687,7 +1543,7 @@ for (const [select, name] of [[$("#list-sort"), "kanzo.sort"], [$("#list-group")
   select.addEventListener("change", () => { localStorageSet(name, select.value); renderColumns(); });
 }
 
-function renderList(tasks, all, more) {
+function renderList(tasks, all, more, progress) {
   const { statuses, projects } = state.board;
   const by = $("#list-sort").value, group = $("#list-group").value;
   const sorted = !by ? tasks : [...tasks].sort((a, b) =>
@@ -702,7 +1558,7 @@ function renderList(tasks, all, more) {
   const names = group === "tags" ? [...groups.keys()].sort((a, b) => !a - !b || a.localeCompare(b)) : [...groups.keys()];
   $("#list").replaceChildren(...names.flatMap((g) => !groups.get(g).length ? [] : [
     group ? el("h2", { style: group === "status" ? "text-transform:capitalize" : null }, g || "No tag", el("span", { class: "count" }, String(groups.get(g).length))) : null,
-    ...groups.get(g).map((t) => card(t, all, true)),
+    ...groups.get(g).map((t) => card(t, all, progress.get(key(t)), true)),
   ]).filter(Boolean), ...(more ? [more] : []));
 }
 
@@ -792,8 +1648,9 @@ $("#bulk-status").addEventListener("change", (e) => {
   changeSelected({ status: e.target.value });
   e.target.value = "";
 });
-$("#bulk-delete").addEventListener("click", () => {
-  if (confirm(`Delete ${plural(state.selected.size, "task")}, with comments and images? This cannot be undone.`)) changeSelected({ delete: true });
+$("#bulk-delete").addEventListener("click", async () => {
+  if (await askConfirm({ title: tr("Delete tasks?"), confirm: tr("Delete"), danger: true,
+                         message: `Delete ${plural(state.selected.size, "task")}, with comments and images? This cannot be undone.` })) changeSelected({ delete: true });
 });
 $("#bulk-clear").addEventListener("click", clearSelection);
 
@@ -888,6 +1745,7 @@ function summary(t, ...extra) {
   return [
     t.description ? el("span", { class: "desc" }, plainText(t.description)) : null,
     chips.length ? el("span", { class: "tags" }, chips) : null,
+    t.assignee ? assigneeTag(t.assignee) : null,
   ];
 }
 
@@ -907,6 +1765,18 @@ function waitChip(t) {
 // A board on an older version sends no hidden_properties.
 function isPropertyHidden(property) {
   return (state.board?.hidden_properties || []).includes(property);
+}
+
+// Queued for AI agents, or held by an agent or orchestrator, shows a robot; people keep the person.
+function isBot(name) {
+  const account = ((state.board && state.board.accounts) || []).find((a) => a.name === name);
+  return name === AI_AGENTS || Boolean(account && account.kind !== "human");
+}
+
+function assigneeTag(name) {
+  const queued = name === AI_AGENTS;
+  return el("span", { class: "assignee", title: queued ? tr("Queued for AI agents") : tr("Assigned to {0}", name) },
+    icon(isBot(name) ? "bot" : "human"), name);
 }
 
 function isHumanOnly() {
@@ -1030,8 +1900,23 @@ async function spread(group, grabbed, from, place) {
   state.settling = false;
 }
 
+// Each parent's subtasks on the board, by the parent's key, as { done, total }. Done tasks the board
+// hides are missing, so it may undercount.
+function subtaskProgress(tasks) {
+  const progress = new Map();
+  for (const t of tasks) {
+    if (!t.parent) continue;
+    const p = progress.get(t.parent) || { done: 0, total: 0 };
+    p.total++;
+    if (t.status === "done") p.done++;
+    progress.set(t.parent, p);
+  }
+  return progress;
+}
+
 // In the list, a row: no drag to reorder, since a sorted list has no one position to drop into.
-function card(t, showProject, row) {
+// `progress` is the card's subtasks, as subtaskProgress() counts them, if it has any.
+function card(t, showProject, progress, row) {
   const node = el("div", { class: "card" + (row ? " row" : "") + (state.task === t.id ? " open" : "") + (t.waiting_on ? " waiting" : "") + (state.selected.has(t.id) ? " selected" : ""),
                            draggable: row ? null : "true", "data-id": t.id,
                            onclick: (e) => { if (e.metaKey || e.ctrlKey) toggleSelected(t.id); else openTask(t.id); } },
@@ -1039,8 +1924,12 @@ function card(t, showProject, row) {
     el("div", { class: "head" },
       el("div", { class: "title" }, t.title),
       t.human ? el("span", { class: "human-mark", title: tr("Human task: agents skip it") }, icon("human")) : null,
+      progress ? el("span", { class: "progress" + (progress.done === progress.total ? " complete" : ""),
+                              title: tr("{0} of {1} done", progress.done, plural(progress.total, "subtask")) },
+                    `☑ ${progress.done}/${progress.total}`) : null,
       el("span", { class: "num", title: tr("Copy {0}", key(t)), onclick: (e) => { e.stopPropagation(); copyKey(key(t)); } },
         showProject ? el("span", { class: "dot", style: `background:${projectColor(t.project)}` }) : null, `#${t.id}`)),
+    t.parent ? el("div", { class: "parent-line", title: tr("Subtask of {0}", t.parent) }, `↳ ${t.parent}`) : null,
     ...summary(t, waitChip(t), urlChip(t)).slice(row ? 1 : 0));
   node.addEventListener("dragstart", (e) => {
     state.dragging = t.id;
@@ -1145,7 +2034,8 @@ function dropFresh() {
   if (!fresh) return;
   const id = fresh;
   fresh = null;
-  api("DELETE", `/tasks/${id}`).then(loadBoard, () => {});
+  // The panel may list it as a subtask of the task now open.
+  api("DELETE", `/tasks/${id}`).then(() => { loadBoard(); refreshTask(); }, () => {});
 }
 
 // A reload or a closed tab may never blur the field being typed in.
@@ -1163,7 +2053,14 @@ window.addEventListener("pagehide", () => {
   if (fresh) fetch(`/api/tasks/${fresh}`, { method: "DELETE", keepalive: true });
 });
 
-function showNewProject() {
+// `template` presets "Start from"; the select hides when no project is a template.
+function showNewProject(template) {
+  const select = $("#new-project-template");
+  const templates = state.board ? state.board.projects.filter((p) => p.template) : [];
+  select.replaceChildren(el("option", { value: "" }, "Blank project"),
+    ...templates.map((p) => el("option", { value: p.slug }, p.name)));
+  select.value = typeof template === "string" && templates.some((p) => p.slug === template) ? template : "";
+  $("#new-project-start").hidden = !templates.length;
   $("#project-dialog").hidden = false;
   $("#new-project [name=slug]").focus();
 }
@@ -1183,13 +2080,14 @@ $("#filter").addEventListener("keydown", (e) => {
   else if (e.key === "Enter" && text) { box.value = ""; paintQuery(box); setFilters([...savedFilters(), text]); }
   else if (e.key === "Backspace" && !box.value && savedFilters().length) setFilters(savedFilters().slice(0, -1));
 });
-$("#new-project-toggle").addEventListener("click", showNewProject);
+$("#new-project-toggle").addEventListener("click", () => showNewProject());
 $("#new-project-cancel").addEventListener("click", hideNewProject);
 $("#new-project").addEventListener("submit", async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
   try {
-    const p = await api("POST", "/projects", { slug: f.get("slug"), name: f.get("name"), repo: f.get("repo") || null });
+    const p = await api("POST", "/projects", { slug: f.get("slug"), name: f.get("name"), repo: f.get("repo") || null,
+                                               template: f.get("template") || null });
     hideNewProject();
     setProject(p.slug);
   } catch (err) { toast(err.message); }
@@ -1212,11 +2110,13 @@ async function openTask(id) {
   document.querySelectorAll(".card.open").forEach((c) => c.classList.remove("open"));
   document.querySelector(`.card[data-id="${id}"]`)?.classList.add("open");
   $("#p-comment").value = drafts.get(id) || "";
+  $("#p-comment-status").value = "";
+  $("#p-comment-agents").checked = false;
   pending = [];
   renderPending();
-  fit($("#p-comment"));
   updateHash();
   await refreshTask();
+  showFocusedComment();
   if (state.task !== id) return;
   panel.classList.add("shown");
   panel.setAttribute("aria-hidden", "false");
@@ -1251,7 +2151,7 @@ async function refreshTask() {
   // Another task may have taken the panel meanwhile.
   if (state.task !== id) return;
   // A board on an older version sends neither list.
-  const { task, comments, images, waits_on = [], blocks = [] } = data;
+  const { task, comments, images, waits_on = [], blocks = [], children = [] } = data;
   panelTask = task;
   panelWaits = waits_on.map(key).join(", ");
   $("#p-key").textContent = key(task);
@@ -1263,27 +2163,41 @@ async function refreshTask() {
   }
   showDesc();
   const status = $("#p-status");
-  const statuses = state.board ? state.board.statuses : [task.status];
+  const statuses = state.board ? projectStatuses(task.project) : [task.status];
   status.replaceChildren(...statuses.map((s) => el("option", { value: s }, s)));
   if (!statuses.includes(task.status)) status.append(el("option", { value: task.status }, task.status));
   status.value = task.status;
+  renderCommentStatus(task, statuses);
+  renderAssigneePick(task);
+  renderParent(task);
+  renderSubtasks(children);
   $("#p-human").checked = task.human;
   $("#p-waits-links").replaceChildren(...waits_on.map(taskLink));
   $("#p-blocks").replaceChildren(...blocks.map(taskLink));
   $("#p-blocks-row").hidden = !blocks.length;
   $("#p-created").replaceChildren(timeEl(task.created_at));
   $("#p-updated").replaceChildren(timeEl(task.updated_at));
-  $("#p-comment-count").textContent = comments.length ? String(comments.length) : "";
+  const notes = comments.filter((c) => c.moved_to || c.assigned_to != null).length;
+  $("#p-comment-count").textContent = comments.length > notes ? String(comments.length - notes) : "";
   $("#p-images").replaceChildren(...images.filter((i) => i.comment_id === null).map((i) =>
     thumb(i.file, async () => {
       try { await api("DELETE", `/images/${i.id}`); refreshTask(); } catch (err) { toast(err.message); }
     })));
   $("#p-comments").replaceChildren(...comments.map((c) => {
+    if (c.moved_to) {
+      return el("div", { class: "move-note" }, icon("moved"),
+        el("span", {}, "moved from ", el("b", {}, c.moved_from), " to ", el("b", {}, c.moved_to),
+          ` by ${c.author} · `, timeEl(c.created_at)));
+    }
+    if (c.assigned_to != null) return assignNote(c);
     const body = el("div", { class: "md" });
-    body.innerHTML = markdown(c.body);
+    body.innerHTML = markdown(c.body, task.project);
     const attached = images.filter((i) => i.comment_id === c.id);
-    return el("div", { class: "comment" },
+    const link = `${key(task)}/c${c.id}`;
+    return el("div", { class: "comment", id: `c${c.id}` },
       el("div", { class: "who" }, el("b", {}, c.author), " · ", timeEl(c.created_at),
+        el("button", { class: "remove copy-link", title: tr("Copy a link to this comment ({0})", link), "aria-label": tr("Copy a link to this comment"),
+                       onclick: () => copyKey(link) }, icon("link")),
         el("button", { class: "remove", title: tr("Delete comment"), "aria-label": tr("Delete comment"),
                        onclick: () => deleteComment(c) }, icon("trash"))),
       c.body ? body : null,
@@ -1291,8 +2205,20 @@ async function refreshTask() {
   }));
 }
 
+// An assignment change, as a slim line like a move note; "" on either side means nobody.
+function assignNote(c) {
+  const from = c.assigned_from || "", to = c.assigned_to || "";
+  const name = (n) => el("b", { class: "name" }, n);
+  const what = !from ? ["assigned to ", name(to)]
+    : !to ? ["unassigned from ", name(from)]
+    : ["reassigned from ", name(from), " to ", name(to)];
+  return el("div", { class: "move-note" }, icon(isBot(to || from) ? "bot" : "human"),
+    el("span", {}, ...what, ` by ${c.author} · `, timeEl(c.created_at)));
+}
+
 async function deleteComment(c) {
-  if (!confirm(tr("Delete this comment? This cannot be undone."))) return;
+  if (!await askConfirm({ title: tr("Delete comment?"), message: tr("Delete this comment? This cannot be undone."),
+                          confirm: tr("Delete"), danger: true })) return;
   try {
     await api("DELETE", `/comments/${c.id}`);
     await refreshTask();
@@ -1312,6 +2238,198 @@ function renderProjectPick(task) {
   });
   $("#p-project").replaceChildren(el("label", { class: "tag project-pick" },
     el("span", { class: "dot", style: `background:${projectColor(task.project)}` }), select));
+}
+
+function accountLabel(a) {
+  return a.kind === "agent" ? a.name : `${a.name} (${KIND_LABELS[a.kind] || a.kind})`;
+}
+
+function renderAssigneePick(task) {
+  const select = $("#p-assignee");
+  const accounts = (state.board && state.board.accounts) || [];
+  const humans = accounts.filter((a) => a.kind === "human");
+  select.replaceChildren(el("option", { value: "" }, "Unassigned"),
+    el("option", { value: AI_AGENTS }, AI_AGENTS),
+    ...humans.map((a) => el("option", { value: a.name }, accountLabel(a))));
+  // A task agent or orchestrator holding it shows only while it does.
+  if (task.assignee && task.assignee !== AI_AGENTS && !humans.some((a) => a.name === task.assignee)) {
+    const account = accounts.find((a) => a.name === task.assignee);
+    const label = account ? `${account.name} (${KIND_LABELS[account.kind] || account.kind})` : task.assignee;
+    select.append(el("option", { value: task.assignee }, label));
+  }
+  select.value = task.assignee || "";
+}
+
+// Tasks met off the board, by key: a parent elsewhere still shows its title and status.
+const knownTasks = new Map();
+const loadingTasks = new Set();
+
+// A task's `parent` is its parent's key; ids are board-wide, so its number alone finds it.
+const keyId = (k) => Number(String(k).split("#").pop()) || null;
+
+function boardTask(k) {
+  return (state.board && state.board.tasks.find((t) => key(t) === k)) || null;
+}
+
+function loadKnownTask(k) {
+  if (loadingTasks.has(k)) return;
+  loadingTasks.add(k);
+  api("GET", `/tasks/${keyId(k)}`).then(({ task }) => {
+    knownTasks.set(k, task);
+    if (panelTask && panelTask.parent === k) renderParent(panelTask);
+  }, () => {}).then(() => loadingTasks.delete(k));
+}
+
+// While the picker is open, refreshes leave the field alone.
+let parentPicking = false;
+let parentOptions = [], parentSelected = 0, parentRequest = 0, parentTimer;
+
+function renderParent(task) {
+  if (parentPicking) return;
+  const field = $("#p-parent");
+  if (!task.parent) {
+    field.replaceChildren(el("button", { type: "button", class: "ghost parent-none", title: "Pick a parent task",
+                                         onclick: openParentPick }, "None"));
+    return;
+  }
+  const parent = boardTask(task.parent);
+  if (!parent) loadKnownTask(task.parent);
+  const shown = parent || knownTasks.get(task.parent);
+  const id = keyId(task.parent);
+  field.replaceChildren(el("span", { class: "parent-row" },
+    el("a", { class: "parent-link", href: taskHref(id), "data-task": id, title: `Open ${task.parent}` },
+      shown ? statusIcon(shown.status) : null, el("span", { class: "mono" }, task.parent),
+      shown ? el("span", { class: "title" }, shown.title) : null),
+    el("button", { type: "button", class: "ghost", title: "Change parent", "aria-label": "Change parent",
+                   onclick: openParentPick }, icon("rename")),
+    el("button", { type: "button", class: "ghost", title: "Remove parent", "aria-label": "Remove parent",
+                   onclick: () => patchTask({ parent: "" }) }, icon("close"))));
+}
+
+function openParentPick() {
+  if (!panelTask) return;
+  parentPicking = true;
+  const input = el("input", { class: "field", placeholder: "Find a task by key or title", autocomplete: "off",
+                              spellcheck: "false", "aria-label": "Parent task" });
+  input.addEventListener("input", () => findParents(input.value));
+  input.addEventListener("keydown", parentKeydown);
+  input.addEventListener("blur", closeParentPick);
+  $("#p-parent").replaceChildren(el("div", { class: "parent-pick" }, input,
+    el("div", { class: "parent-results", role: "listbox" })));
+  input.focus();
+  findParents("");
+}
+
+function closeParentPick() {
+  if (!parentPicking) return;
+  parentPicking = false;
+  clearTimeout(parentTimer);
+  parentRequest++;
+  if (panelTask) renderParent(panelTask);
+}
+
+// The board's matches show at once; from two characters on, the server's search adds tasks beyond it.
+function findParents(q) {
+  const words = wordsOf(q);
+  const project = panelTask.project;
+  const local = (state.board ? state.board.tasks : [])
+    .filter((t) => words.every((w) => `${key(t)} ${t.title}`.toLowerCase().includes(w)))
+    .sort((a, b) => (b.project === project) - (a.project === project));
+  const request = ++parentRequest;
+  clearTimeout(parentTimer);
+  const searching = q.trim().length >= 2;
+  showParentOptions(local, q, searching);
+  if (!searching) return;
+  parentTimer = setTimeout(async () => {
+    try {
+      const found = await api("GET", "/search?q=" + encodeURIComponent(q.trim()));
+      if (request !== parentRequest) return;
+      const seen = new Set(local.map(key));
+      showParentOptions(local.concat(found.filter((t) => !seen.has(key(t)))), q, false);
+    } catch (err) { if (request === parentRequest) toast(err.message); }
+  }, 120);
+}
+
+// Leaves out the task itself and its subtasks, at any depth, as far as their parents are known.
+function parentCandidates(tasks) {
+  const own = key(panelTask);
+  const byKey = new Map();
+  for (const t of (state.board ? state.board.tasks : []).concat(tasks, panelChildren)) byKey.set(key(t), t);
+  return tasks.filter((t) => {
+    for (let k = key(t), hops = 0; k && hops < 100; hops++) {
+      if (k === own) return false;
+      const up = byKey.get(k);
+      k = up ? up.parent : null;
+    }
+    return true;
+  });
+}
+
+function showParentOptions(tasks, q, searching) {
+  const list = $("#p-parent .parent-results");
+  if (!list || !panelTask) return;
+  parentOptions = parentCandidates(tasks).slice(0, 30);
+  parentSelected = 0;
+  const empty = searching ? "Searching…" : q.trim() ? "No tasks match." : "No tasks to pick.";
+  list.replaceChildren(...parentOptions.map((t, i) =>
+    el("button", { type: "button", class: "parent-option" + (i === 0 ? " selected" : ""), role: "option",
+                   onmousedown: (e) => e.preventDefault(), onmousemove: () => selectParent(i), onclick: () => pickParent(t) },
+      statusIcon(t.status), el("span", { class: "mono" }, key(t)), el("span", { class: "title" }, t.title))),
+    ...(parentOptions.length ? [] : [el("div", { class: "note" }, empty)]));
+}
+
+function selectParent(i) {
+  const rows = $("#p-parent").querySelectorAll(".parent-option");
+  if (!rows.length) return;
+  parentSelected = (i + rows.length) % rows.length;
+  rows.forEach((r, j) => r.classList.toggle("selected", j === parentSelected));
+  rows[parentSelected].scrollIntoView({ block: "nearest" });
+}
+
+function pickParent(t) {
+  knownTasks.set(key(t), t);
+  closeParentPick();
+  patchTask({ parent: key(t) });
+}
+
+function parentKeydown(e) {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); selectParent(parentSelected + (e.key === "ArrowDown" ? 1 : -1)); }
+  else if (e.key === "Enter") { e.preventDefault(); if (parentOptions[parentSelected]) pickParent(parentOptions[parentSelected]); }
+  else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeParentPick(); }
+}
+
+// The open task's subtasks, as the server last sent them.
+let panelChildren = [];
+
+function renderSubtasks(children) {
+  panelChildren = children;
+  const done = children.filter((c) => c.status === "done").length;
+  $("#p-subtasks-head").hidden = !children.length;
+  $("#p-subtasks-count").textContent = `${done}/${children.length} done`;
+  $("#p-children").replaceChildren(...children.map((c) =>
+    el("a", { class: "subtask" + (c.status === "done" ? " done" : ""), href: taskHref(c.id), "data-task": c.id, title: `Open ${key(c)}` },
+      statusIcon(c.status), el("span", { class: "mono" }, key(c)), el("span", { class: "title" }, c.title),
+      c.assignee ? assigneeTag(c.assignee) : null)));
+}
+
+const NEW_SUBTASK_TITLE = "New subtask";
+
+// Like newTask(), but under the open task. It gets a history entry, so Back returns to the parent,
+// and as with a new task, one left untitled is dropped on the way out.
+async function addSubtask() {
+  if (!panelTask) return;
+  const parent = panelTask;
+  // Giving it a subtask keeps a just-made parent.
+  if (fresh === parent.id) fresh = null;
+  try {
+    const task = await api("POST", "/tasks", { project: parent.project, title: NEW_SUBTASK_TITLE, parent: key(parent) });
+    history.pushState(null, "", "#" + state.project + "/" + task.id);
+    await openTask(task.id);
+    fresh = task.id;
+    loadBoard();
+    $("#p-title").focus({ preventScroll: true });
+    $("#p-title").select();
+  } catch (err) { toast(err.message); }
 }
 
 function fit(t) {
@@ -1380,7 +2498,10 @@ $("#p-edge").addEventListener("pointerdown", (down) => {
 
 $("#p-close").addEventListener("click", closeTask);
 $("#p-key").addEventListener("click", () => { if (panelTask) copyKey(key(panelTask)); });
-for (const field of [$("#p-title"), $("#p-desc")]) field.addEventListener("input", () => fit(field));
+// Before the fields' other listeners, so the editors handle Enter and text pastes first.
+mdEditor($("#p-desc"));
+mdEditor($("#p-comment"));
+$("#p-title").addEventListener("input", (e) => fit(e.target));
 
 $("#p-title").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); closeTask(); }
@@ -1403,7 +2524,7 @@ $("#p-desc").addEventListener("blur", (e) => {
   showDesc();
 });
 
-// Empty, the textarea stays, so its placeholder has something to click.
+// Empty, the editor stays, so its placeholder has something to click.
 function showDesc() {
   const desc = $("#p-desc"), view = $("#p-desc-view");
   const editing = document.activeElement === desc || !desc.value.trim();
@@ -1411,23 +2532,31 @@ function showDesc() {
   view.hidden = editing;
   // Hidden, it measured 0, as it does when the task before this one had a description.
   if (editing) fit(desc);
-  else view.innerHTML = markdown(desc.value);
+  else view.innerHTML = markdown(desc.value, panelTask && panelTask.project);
 }
 
-function editDesc() {
+// `at` is where the caret goes, an offset into the description; by default its end.
+function editDesc(at) {
   const desc = $("#p-desc");
   $("#p-desc-view").hidden = true;
   desc.hidden = false;
-  fit(desc);
   desc.focus();
+  desc.setSelectionRange(typeof at === "number" ? at : desc.value.length);
 }
 
-// A click on a link opens it instead of editing.
-$("#p-desc-view").addEventListener("mousedown", (e) => { if (e.target.closest("a")) e.preventDefault(); });
-$("#p-desc-view").addEventListener("focus", editDesc);
+// A click on a link opens it instead of editing; elsewhere it edits, with the caret where it was clicked.
+$("#p-desc-view").addEventListener("mousedown", (e) => {
+  if (e.target.closest("a")) { e.preventDefault(); return; }
+  if (e.button !== 0) return;
+  e.preventDefault();
+  editDesc(sourceOffsetAt(e.currentTarget, e.clientX, e.clientY, $("#p-desc").value));
+});
+$("#p-desc-view").addEventListener("focus", () => editDesc());
 
 $("#p-status").addEventListener("change", (e) => patchTask({ status: e.target.value }));
 $("#p-human").addEventListener("change", (e) => patchTask({ human: e.target.checked }));
+$("#p-assignee").addEventListener("change", (e) => patchTask({ assignee: e.target.value }));
+$("#p-add-subtask").addEventListener("click", addSubtask);
 
 let pending = [];
 
@@ -1459,6 +2588,43 @@ async function attachImages(images, toComment) {
   } catch (err) { toast(err.message); }
 }
 
+// Images open in a dialog over the board, not in a new tab; the arrow keys step through
+// the others in view. Ctrl/Cmd-click still opens the file itself.
+let imageList = [], imageAt = 0;
+
+function showImage(i) {
+  imageAt = (i + imageList.length) % imageList.length;
+  const src = imageList[imageAt];
+  $("#image-view").src = src;
+  $("#image-original").href = src;
+  $("#image-count").textContent = imageList.length > 1 ? `${imageAt + 1} of ${imageList.length}` : "";
+}
+
+function openImage(link) {
+  const scope = link.closest("#panel, .search-dialog") || document;
+  imageList = [...new Set([...scope.querySelectorAll('a[href^="/images/"]')].map((a) => a.getAttribute("href")))];
+  showImage(Math.max(imageList.indexOf(link.getAttribute("href")), 0));
+  $("#image-dialog").hidden = false;
+  $("#image-close").focus();
+}
+
+function closeImage() {
+  $("#image-dialog").hidden = true;
+  $("#image-view").removeAttribute("src");
+}
+
+document.addEventListener("click", (e) => {
+  const link = e.target.closest('a[href^="/images/"]');
+  if (!link || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || link.closest("#image-dialog")) return;
+  e.preventDefault();
+  openImage(link);
+});
+$("#image-close").addEventListener("click", closeImage);
+$("#image-dialog").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowRight") showImage(imageAt + 1);
+  else if (e.key === "ArrowLeft") showImage(imageAt - 1);
+});
+
 function thumb(file, onRemove) {
   return el("div", { class: "thumb" },
     el("a", { href: `/images/${file}`, target: "_blank", rel: "noopener" }, el("img", { src: `/images/${file}`, alt: tr("Attached image") })),
@@ -1467,7 +2633,7 @@ function thumb(file, onRemove) {
 
 function renderPending() {
   $("#p-pending").replaceChildren(...pending.map((file, i) => thumb(file, () => { pending.splice(i, 1); renderPending(); })));
-  $("#p-send").disabled = !$("#p-comment").value.trim() && !pending.length;
+  showCommentStatus();
 }
 
 for (const field of [$("#p-title"), $("#p-desc"), $("#p-comment")]) {
@@ -1581,26 +2747,78 @@ $("#p-waits").addEventListener("blur", (e) => {
   e.target.value = e.target.value.replace(/[,\s]+$/, "");
   if (panelTask && e.target.value !== panelWaits) patchTask({ waits_on: e.target.value });
 });
+// The status the task moves to once the comment is sent; "" keeps it. A pick survives refreshes while still valid.
+function renderCommentStatus(task, statuses) {
+  const pick = $("#p-comment-status");
+  const agents = $("#p-comment-agents");
+  const queued = task.assignee === AI_AGENTS;
+  agents.disabled = queued;
+  agents.parentElement.classList.toggle("off", queued);
+  if (queued) agents.checked = true;
+  else if (agents.dataset.queued) agents.checked = false;
+  agents.dataset.queued = queued ? "1" : "";
+  if (document.activeElement !== pick) {
+    const picked = pick.value;
+    const moves = statuses.filter((s) => s !== task.status);
+    pick.replaceChildren(el("option", { value: "" }, "Change status"),
+      ...moves.map((s) => el("option", { value: s }, s[0].toUpperCase() + s.slice(1))));
+    pick.value = moves.includes(picked) ? picked : "";
+  }
+  showCommentStatus();
+}
+
+// Send posts the comment, if any, then makes the picked changes; with neither there is nothing to send.
+function showCommentStatus() {
+  const pick = $("#p-comment-status");
+  const agents = $("#p-comment-agents");
+  const assign = agents.checked && !agents.disabled;
+  const said = !!$("#p-comment").value.trim() || pending.length > 0;
+  pick.classList.toggle("set", !!pick.value);
+  const parts = [];
+  if (pick.value) parts.push(`move to ${pick.value}`);
+  if (assign) parts.push(`assign to ${AI_AGENTS}`);
+  const action = parts.join(" and ");
+  const title = said ? (action ? `Send and ${action}` : "Send") : action && action[0].toUpperCase() + action.slice(1);
+  const send = $("#p-send");
+  send.disabled = !said && !action;
+  send.title = send.disabled ? "Send (⌘↵)" : `${title} (⌘↵)`;
+  send.setAttribute("aria-label", said || !action ? "Send comment" : title);
+}
+$("#p-comment-status").addEventListener("change", showCommentStatus);
+$("#p-comment-agents").addEventListener("change", showCommentStatus);
 
 $("#p-comment-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const body = $("#p-comment").value.trim();
-  if ((!body && !pending.length) || !panelTask) return;
+  const id = panelTask && panelTask.id, status = $("#p-comment-status").value;
+  const agents = $("#p-comment-agents"), assign = agents.checked && !agents.disabled;
+  const said = !!body || pending.length > 0;
+  if (!panelTask || (!said && !status && !assign)) return;
   try {
-    await api("POST", `/tasks/${panelTask.id}/comments`, { body, images: pending });
-    if (fresh === panelTask.id) fresh = null;
-    drafts.delete(panelTask.id);
-    $("#p-comment").value = "";
-    pending = [];
-    renderPending();
-    fit($("#p-comment"));
+    if (said) {
+      await api("POST", `/tasks/${id}/comments`, { body, images: pending });
+      if (fresh === id) fresh = null;
+      drafts.delete(id);
+      $("#p-comment").value = "";
+      pending = [];
+      renderPending();
+      fit($("#p-comment"));
+    }
+    $("#p-comment-status").value = "";
+    if (!agents.disabled) agents.checked = false;
+    showCommentStatus();
+    const fields = {};
+    if (status) fields.status = status;
+    if (assign) fields.assignee = AI_AGENTS;
+    // patchTask refreshes the panel and board itself.
+    if (Object.keys(fields).length && panelTask && panelTask.id === id) { await patchTask(fields); return; }
     await refreshTask();
     loadBoard();
   } catch (err) { toast(err.message); }
 });
 $("#p-comment").addEventListener("input", (e) => {
   if (e.target.value) drafts.set(state.task, e.target.value); else drafts.delete(state.task);
-  $("#p-send").disabled = !e.target.value.trim() && !pending.length;
+  showCommentStatus();
   fit(e.target);
 });
 $("#p-comment").addEventListener("keydown", (e) => {
@@ -1610,7 +2828,8 @@ $("#p-comment").addEventListener("keydown", (e) => {
 $("#p-delete").addEventListener("click", async () => {
   if (!panelTask) return;
   const extra = panelTask.comments ? tr(" and its {0}", plural(panelTask.comments, "comment")) : "";
-  if (!confirm(tr("Delete {0}{1}? This cannot be undone.", key(panelTask), extra))) return;
+  if (!await askConfirm({ title: tr("Delete task?"), message: tr("Delete {0}{1}? This cannot be undone.", key(panelTask), extra),
+                          confirm: tr("Delete"), danger: true })) return;
   try {
     if (fresh === panelTask.id) fresh = null;
     await api("DELETE", `/tasks/${panelTask.id}`);
@@ -1679,7 +2898,7 @@ $("#search").addEventListener("keydown", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  const typing = e.target.closest("input, textarea, select");
+  const typing = e.target.closest('input, textarea, select, [contenteditable="true"]');
   const plain = !typing && !e.metaKey && !e.ctrlKey;
   if (e.key === "Escape" && state.menu) { closeMenu(); return; }
   // Only in the installed app: in a browser tab, these keys belong to the browser.
@@ -1701,16 +2920,24 @@ document.addEventListener("keydown", (e) => {
 });
 
 window.addEventListener("hashchange", () => {
-  const { slug, task } = readHash();
+  const { slug, task, comment } = readHash();
   if ((slug || "all") !== state.project) setProject(slug || "all");
+  focusComment = comment;
   if (task && task !== state.task) openTask(task);
+  else if (task) showFocusedComment();
   else if (!task && state.task) closeTask();
 });
 
 async function poll() {
   if (document.hidden) return schedulePoll();
   try {
-    const { changes, guests = null } = await api("GET", "/changes");
+    const { build, changes, guests = null } = await api("GET", "/changes");
+    // Not while something is being typed: the next check reloads instead.
+    if (state.build && build !== state.build && !document.activeElement.closest('input, textarea, [contenteditable="true"]')) {
+      location.reload();
+      return;
+    }
+    if (!state.build) state.build = build;
     $("#offline").hidden = true;
     if (guests !== state.guests) {
       state.guests = guests;
@@ -1754,15 +2981,19 @@ async function syncNow(keep) {
   if (diverged) chooseSide(diverged);
 }
 
-function chooseSide({ first }) {
+async function chooseSide({ first }) {
   const repo = repoName(syncRemote);
   if (first) {
-    if (confirm(tr("{0} already has a board. Use it on this machine?\n\nThis machine's current board is kept in kanzo.db.bak.", repo))) syncNow("remote");
-    else if (confirm(tr("Replace the board in {0} with this machine's board instead?", repo))) syncNow("local");
+    if (await askConfirm({ title: tr("Use the board in {0}?", repo), confirm: tr("Use theirs"), cancel: tr("Keep mine…"),
+                           message: tr("{0} already has a board. Use it on this machine?\n\nThis machine's current board is kept in kanzo.db.bak.", repo) })) syncNow("remote");
+    else if (await askConfirm({ title: tr("Replace the board in {0}?", repo), confirm: tr("Replace with mine"), danger: true,
+                                message: tr("Replace the board in {0} with this machine's board instead?", repo) })) syncNow("local");
     return;
   }
-  if (confirm(tr("This machine and another one both changed the board since the last sync, and boards can't be merged.\n\nKeep THIS machine's board, and overwrite the other one?"))) syncNow("local");
-  else if (confirm(tr("Take the other machine's board instead? This machine's board is kept in kanzo.db.bak."))) syncNow("remote");
+  if (await askConfirm({ title: tr("Boards can't be merged"), confirm: tr("Keep mine"), cancel: tr("Use theirs…"), danger: true,
+                         message: tr("This machine and another one both changed the board since the last sync, and boards can't be merged.\n\nKeep THIS machine's board, and overwrite the other one?") })) syncNow("local");
+  else if (await askConfirm({ title: tr("Use the other board?"), confirm: tr("Use theirs"),
+                              message: tr("Take the other machine's board instead? This machine's board is kept in kanzo.db.bak.") })) syncNow("remote");
 }
 
 let syncRemote = null;
@@ -1960,6 +3191,43 @@ function showSection(section) {
   document.querySelectorAll("#settings-nav button").forEach((b) => b.classList.toggle("active", b.dataset.section === section));
   document.querySelectorAll(".settings-pane").forEach((p) => { p.hidden = p.dataset.section !== section; });
   if (section === "about") loadWhatsNew();
+  if (section === "accounts") showAccounts();
+}
+
+function showAccounts() {
+  const pick = $("#account-project");
+  const picked = pick.value;
+  const projects = state.board ? state.board.projects.map((p) => p.slug) : [];
+  pick.replaceChildren(el("option", { value: "" }, "No project"),
+    ...projects.map((slug) => el("option", { value: slug }, slug)));
+  pick.value = projects.includes(picked) ? picked : "";
+  loadAccounts();
+}
+
+async function loadAccounts() {
+  let accounts;
+  try {
+    accounts = await api("GET", "/accounts");
+  } catch (err) { toast(err.message); return; }
+  $("#accounts-list").replaceChildren(...(accounts.length ? accounts.map((a) =>
+    el("div", { class: "account" },
+      el("span", { class: "text" }, el("b", {}, a.name),
+        el("span", {}, [KIND_LABELS[a.kind] || a.kind, a.project].filter(Boolean).join(" · "))),
+      el("button", { class: "ghost", type: "button", title: "Copy token", "aria-label": `Copy ${a.name}'s token`,
+                     onclick: () => copyKey(a.token, "Token copied") }, icon("copy")),
+      el("button", { class: "ghost danger", type: "button", title: "Remove account", "aria-label": `Remove ${a.name}`,
+                     onclick: () => removeAccount(a) }, icon("trash"))))
+    : [el("div", { class: "note" }, "No accounts yet")]));
+}
+
+async function removeAccount(a) {
+  if (!await askConfirm({ title: "Remove account?", confirm: "Remove", danger: true,
+                          message: `Remove ${a.name}? Its token stops working and its tasks become unassigned. This cannot be undone.` })) return;
+  try {
+    await api("DELETE", `/accounts/${encodeURIComponent(a.name)}`);
+    loadAccounts();
+    loadBoard();
+  } catch (err) { toast(err.message); }
 }
 
 // Fetched when first shown, so the page doesn't carry the notes on every load.
@@ -1982,7 +3250,8 @@ $("#settings-nav").addEventListener("click", (e) => {
 });
 $("#settings-close").addEventListener("click", closeSettings);
 for (const [dialog, close] of [[$("#project-dialog"), hideNewProject], [$("#search-dialog"), closeSearch],
-                               [$("#settings-dialog"), closeSettings]]) {
+                               [$("#settings-dialog"), closeSettings], [$("#columns-dialog"), closeColumns],
+                               [$("#confirm-dialog"), () => finishConfirm(false)], [$("#image-dialog"), closeImage]]) {
   dialog.addEventListener("mousedown", (e) => { if (e.target === dialog) close(); });
   dialog.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } });
 }
@@ -2014,6 +3283,18 @@ $('.settings-pane[data-section="board"]').append(...["Description", "Tags", "URL
     pane.querySelector(".setting"));
 }
 $("#settings-update").addEventListener("click", checkForUpdates);
+$("#account-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const name = $("#account-name");
+  try {
+    const a = await api("POST", "/accounts", { name: name.value.trim(), kind: $("#account-kind").value,
+                                               project: $("#account-project").value || null });
+    name.value = "";
+    loadAccounts();
+    loadBoard();
+    copyKey(a.token, `Added ${a.name}. Token copied`);
+  } catch (err) { toast(err.message); }
+});
 
 async function checkUpdate() {
   try {
@@ -2027,8 +3308,9 @@ function showUpdate({ current, available }) {
   if (!available) return;
   $("#update-label").textContent = tr("Update to {0}", available);
   button.title = tr("You have {0}", current);
-  button.onclick = () => {
-    if (confirm(tr("Update Kanzo from {0} to {1}? The board restarts, which takes a few seconds.", current, available))) installUpdate(available);
+  button.onclick = async () => {
+    if (await askConfirm({ title: tr("Update Kanzo?"), confirm: tr("Update"),
+                           message: tr("Update Kanzo from {0} to {1}? The board restarts, which takes a few seconds.", current, available) })) installUpdate(available);
   };
 }
 
@@ -2038,7 +3320,8 @@ async function checkForUpdates() {
     const status = await api("GET", "/update?now=1");
     showUpdate(status);
     if (status.available) {
-      if (confirm(tr("Kanzo {0} is out (you have {1}). Download and install it now? The board restarts.", status.available, status.current))) {
+      if (await askConfirm({ title: tr("Update Kanzo?"), confirm: tr("Install"),
+                             message: tr("Kanzo {0} is out (you have {1}). Download and install it now? The board restarts.", status.available, status.current) })) {
         installUpdate(status.available);
       }
     } else if (status.latest) {
@@ -2139,8 +3422,9 @@ loadDictionary().then(() => {
   loadNetwork();
   schedulePoll();
   {
-    const { slug, task } = readHash();
+    const { slug, task, comment } = readHash();
     state.project = slug || localStorageGet("kanzo.project") || "all";
+    focusComment = comment;
     loadBoard().then(() => { if (task) openTask(task); });
   }
 });

@@ -396,6 +396,23 @@ impl Upstream {
         }
     }
 
+    /// Saves an image on the shared board and returns its file name there.
+    pub async fn upload_image(&self, bytes: Vec<u8>, ext: &str) -> Result<String, String> {
+        let mime = crate::store::IMAGE_TYPES.iter().find(|(e, _)| *e == ext).map_or("image/png", |(_, m)| m);
+        let mut reply = send(&self.host, "POST", "/api/images", &[("content-type", mime)], &bytes)
+            .await
+            .map_err(|_| unreachable(&self.host))?;
+        let mut body = String::new();
+        let _ = reply.body.read_to_string(&mut body).await;
+        let answer: Value = serde_json::from_str(&body).unwrap_or_default();
+        match answer["file"].as_str() {
+            Some(file) if reply.status == 200 => Ok(file.to_string()),
+            _ => Err(answer["error"]
+                .as_str()
+                .map_or_else(|| format!("The shared board answered {}.", reply.status), String::from)),
+        }
+    }
+
     async fn post(&mut self, line: &str) -> io::Result<(u16, Vec<Value>)> {
         let images = self.images.display().to_string();
         let mut headers = vec![

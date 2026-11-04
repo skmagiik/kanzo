@@ -98,7 +98,7 @@ fn collect(store: &Store, only: Option<&str>, images: &Path) -> Result<Board> {
         }
         out.push(ProjectOut { project, tasks });
     }
-    Ok(Board { exported_at: store.now()?, statuses: store.statuses().to_vec(), projects: out })
+    Ok(Board { exported_at: store.now()?, statuses: store.statuses_for(None)?, projects: out })
 }
 
 fn markdown(board: &Board) -> String {
@@ -158,6 +158,10 @@ fn markdown(board: &Board) -> String {
                 if !t.comments.is_empty() {
                     md.push_str("\nComments:\n\n");
                     for c in &t.comments {
+                        if c.is_note() {
+                            let _ = writeln!(md, "- {} by {}, {}", c.body, c.author, short_time(&c.created_at));
+                            continue;
+                        }
                         // Indent follow-on lines so a multi-line comment stays inside its list item.
                         let body = c.body.replace('\n', "\n  ");
                         let _ = writeln!(md, "- **{}**, {}: {body}", c.author, short_time(&c.created_at));
@@ -195,6 +199,7 @@ mod tests {
         assert!(md.contains("Waits on: api#2."), "{md}");
         assert!(md.contains("- **claude-code**, ") && md.contains("Found it\n  in auth.rs"), "{md}");
         assert!(md.contains("### done\n\n#### api#2 Old work"), "{md}");
+        assert!(md.contains("- moved from todo to done by me, "), "{md}");
         assert!(md.contains("## Web `web`"), "{md}");
 
         let json: serde_json::Value = serde_json::to_value(&board).unwrap();

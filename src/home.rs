@@ -190,6 +190,19 @@ impl Home {
         self.dir.join("images")
     }
 
+    /// Saves an image under its content's hash, once however often it's attached, and returns its file name.
+    pub fn save_image(&self, bytes: &[u8], ext: &str) -> io::Result<String> {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut hasher);
+        let file = format!("{:016x}.{ext}", hasher.finish());
+        let path = self.images().join(&file);
+        if !path.exists() {
+            write_whole(&path, bytes)?;
+        }
+        Ok(file)
+    }
+
     /// The same image can be attached in several places, and is stored once.
     pub fn deleting_images<T>(
         &self,
@@ -312,7 +325,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         fs::write(tmp.path().join("config.toml"), "statuses = [\"todo\", \"doing\", \"done\"]\n").unwrap();
         let home = Home::open(tmp.path().to_path_buf()).unwrap();
-        assert_eq!(home.store().unwrap().statuses(), ["todo", "doing", "review", "done"]);
+        assert_eq!(home.store().unwrap().statuses_for(None).unwrap(), ["todo", "doing", "blocked", "review", "done"]);
     }
 
     #[test]
@@ -324,12 +337,12 @@ mod tests {
 
         let waiting = std::thread::spawn({
             let home = home.clone();
-            move || home.store().map(|s| s.statuses().len())
+            move || home.store().map(|s| s.statuses_for(None).unwrap().len())
         });
         std::thread::sleep(Duration::from_millis(200));
         assert!(!waiting.is_finished());
         drop(lock);
-        assert_eq!(waiting.join().unwrap().unwrap(), 4);
+        assert_eq!(waiting.join().unwrap().unwrap(), 5);
     }
 
     #[test]

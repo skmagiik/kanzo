@@ -18,11 +18,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::home::Home;
 use crate::share::{self, Change, Net};
-use crate::store::{self, Error, ImagesOf, Store, TaskPatch};
-use crate::{sync, update};
+use crate::store::{self, Error, IMAGE_LIMIT, ImagesOf, Store, TaskPatch};
+use crate::{reload, sync, update};
 
 const INDEX: &str = include_str!("index.html");
-const IMAGE_LIMIT: usize = 25 * 1024 * 1024;
 const APP_JS: &str = include_str!("app.js");
 const ZH_CN_JS: &str = include_str!("zh-cn.js");
 const LOGO: &[u8] = include_bytes!("logo.png");
@@ -94,8 +93,22 @@ pub async fn serve(home: Home, open: bool) -> Result<()> {
         stop_signal().await;
         stopper.cancel();
     });
-    #[cfg(unix)]
-    tokio::spawn(restart_when_replaced());
+    // Set when the program file was rebuilt: the board stops, then runs the new one.
+    let rebuilt: Arc<std::sync::Mutex<Option<std::path::PathBuf>>> = Default::default();
+    if let Some(mut watch) = reload::Watch::new() {
+        let (stopper, rebuilt) = (shutdown.clone(), rebuilt.clone());
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                if let Some(exe) = watch.ready() {
+                    println!("{} was rebuilt; restarting into it", exe.display());
+                    *rebuilt.lock().unwrap() = Some(exe);
+                    stopper.cancel();
+                    break;
+                }
+            }
+        });
+    }
     let mut listener = listener;
     loop {
         let rebind = shutdown.child_token();
@@ -116,29 +129,11 @@ pub async fn serve(home: Home, open: bool) -> Result<()> {
     for task in running {
         task.await??;
     }
-    Ok(())
-}
-
-/// However Kanzo was updated, from Settings, `kanzo update` or a package manager, the board
-/// restarts on the new program, keeping its port and data folder. Open pages then reload.
-#[cfg(unix)]
-async fn restart_when_replaced() {
-    let Some(exe) = update::Exe::current() else { return };
-    let mut tick = tokio::time::interval(Duration::from_secs(3));
-    loop {
-        tick.tick().await;
-        if !exe.changed() {
-            continue;
-        }
-        let check = exe.clone();
-        let Ok(Some(new)) = tokio::task::spawn_blocking(move || check.replacement().map(|p| p.to_path_buf())).await
-        else {
-            continue;
-        };
-        println!("Kanzo was updated; restarting the board.");
-        eprintln!("kanzo: updated, but cannot restart: {}", update::restart(&new));
-        return;
+    if let Some(exe) = rebuilt.lock().unwrap().take() {
+        // Open boards see a new build in /api/changes and reload.
+        return Err(update::restart(&exe)).context("cannot run the rebuilt program");
     }
+    Ok(())
 }
 
 /// The old listener takes a moment to let go of the port.
@@ -186,12 +181,16 @@ fn router(home: Home, guard: Arc<Guard>, shutdown: CancellationToken) -> Router 
         .route("/api/projects/{slug}", patch(update_project).delete(delete_project))
         .route("/api/projects/{slug}/repos", post(link_repo).delete(unlink_repo))
         .route("/api/projects/{slug}/move", post(move_project))
+        .route("/api/projects/{slug}/statuses", post(add_status))
+        .route("/api/projects/{slug}/statuses/{name}", patch(change_status).delete(remove_status))
         .route("/api/tasks", post(create_task))
         .route("/api/tasks/bulk", post(bulk_tasks))
         .route("/api/tasks/move", post(move_tasks))
         .route("/api/tasks/{id}", get(get_task).patch(update_task).delete(delete_task))
         .route("/api/tasks/{id}/move", post(move_task))
         .route("/api/tasks/{id}/comments", post(add_comment))
+        .route("/api/accounts", get(list_accounts).post(create_account))
+        .route("/api/accounts/{name}", delete(delete_account))
         .route("/api/comments/{id}", delete(delete_comment))
         .route("/api/images", post(save_image).layer(DefaultBodyLimit::max(IMAGE_LIMIT)))
         .route("/api/images/{id}", delete(delete_image))
@@ -429,13 +428,15 @@ fn change_token(home: &Home, s: &Store) -> store::Result<String> {
 
 #[derive(Serialize)]
 struct Changes {
+    /// A new one means the board restarted into a new build: open boards reload.
+    build: &'static str,
     changes: String,
     guests: Option<usize>,
 }
 
 async fn changes(State(home): Shared, Extension(guard): Extension<Arc<Guard>>) -> Response {
     let guests = guard.lan().then(|| guard.guests().len());
-    with_store(home, move |h, s| Ok(Changes { changes: change_token(h, s)?, guests })).await
+    with_store(home, move |h, s| Ok(Changes { build: &reload::BUILD, changes: change_token(h, s)?, guests })).await
 }
 
 /// The done column only grows, and every change reloads the board.
@@ -451,13 +452,25 @@ struct BoardQuery {
 
 #[derive(Serialize)]
 struct Board {
+    accounts: Vec<AccountName>,
     changes: String,
+    /// Every project's own columns, with their descriptions.
+    columns: Vec<store::CustomStatus>,
     done_hidden: usize,
     hidden_properties: Vec<String>,
     projects: Vec<store::Project>,
+    /// The columns shown: the shown project's, or every project's.
     statuses: Vec<String>,
     tasks: Vec<store::Task>,
     version: &'static str,
+}
+
+/// An account without its token, for picking who a task is assigned to.
+#[derive(Serialize)]
+struct AccountName {
+    name: String,
+    kind: store::Kind,
+    project: Option<String>,
 }
 
 async fn board(State(home): Shared, Query(q): Query<BoardQuery>) -> Response {
@@ -467,17 +480,24 @@ async fn board(State(home): Shared, Query(q): Query<BoardQuery>) -> Response {
             None => None,
         };
         let keep_done = (q.done.as_deref() != Some("all")).then_some(DONE_SHOWN);
-        let (mut tasks, done_hidden) = s.list_tasks_keeping_done(project.map(|p| p.id), None, keep_done)?;
+        let project_id = project.map(|p| p.id);
+        let (mut tasks, done_hidden) = s.list_tasks_keeping_done(project_id, None, None, keep_done)?;
         if !q.q.trim().is_empty() {
             let found: HashSet<i64> = s.search(&q.q, None)?.into_iter().map(|t| t.id).collect();
             tasks.retain(|t| found.contains(&t.id));
         }
         Ok(Board {
+            accounts: s
+                .list_accounts()?
+                .into_iter()
+                .map(|a| AccountName { name: a.name, kind: a.kind, project: a.project })
+                .collect(),
             changes: change_token(h, s)?,
+            columns: s.custom_statuses(None)?,
             done_hidden,
             hidden_properties: s.hidden_properties()?,
             projects: s.list_projects()?,
-            statuses: s.statuses().to_vec(),
+            statuses: s.statuses_for(project_id)?,
             tasks,
             version: update::CURRENT,
         })
@@ -501,16 +521,23 @@ struct NewProject {
     #[serde(default)]
     name: String,
     repo: Option<String>,
+    /// Slug of a template project to start from.
+    template: Option<String>,
 }
 
 async fn create_project(State(home): Shared, Json(p): Json<NewProject>) -> Response {
-    with_store(home, move |_, s| s.create_project(&p.slug, &p.name, p.repo.as_deref())).await
+    with_store(home, move |_, s| match p.template.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        Some(template) => s.create_project_from(&p.slug, &p.name, p.repo.as_deref(), template),
+        None => s.create_project(&p.slug, &p.name, p.repo.as_deref()),
+    })
+    .await
 }
 
 #[derive(Deserialize)]
 struct ProjectPatch {
     name: Option<String>,
     color: Option<String>,
+    template: Option<bool>,
 }
 
 async fn update_project(State(home): Shared, Path(slug): Path<String>, Json(p): Json<ProjectPatch>) -> Response {
@@ -521,6 +548,9 @@ async fn update_project(State(home): Shared, Path(slug): Path<String>, Json(p): 
         }
         if let Some(color) = &p.color {
             project = Some(s.set_project_color(&slug, color)?);
+        }
+        if let Some(on) = p.template {
+            project = Some(s.set_project_template(&slug, on)?);
         }
         project.map_or_else(|| s.find_project(&slug), Ok)
     })
@@ -549,6 +579,48 @@ async fn unlink_repo(State(home): Shared, Path(slug): Path<String>, Json(r): Jso
     with_store(home, move |_, s| s.unlink_repo(&slug, &r.repo)).await
 }
 
+#[derive(Deserialize)]
+struct NewStatus {
+    name: String,
+    description: String,
+    after: Option<String>,
+    icon: Option<String>,
+}
+
+async fn add_status(State(home): Shared, Path(slug): Path<String>, Json(n): Json<NewStatus>) -> Response {
+    with_store(home, move |_, s| {
+        let project = s.find_project(&slug)?;
+        s.add_status(project.id, &n.name, &n.description, n.after.as_deref(), n.icon.as_deref())
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct StatusPatch {
+    /// `null` or "" for the default look.
+    icon: Option<String>,
+}
+
+async fn change_status(
+    State(home): Shared,
+    Path((slug, name)): Path<(String, String)>,
+    Json(p): Json<StatusPatch>,
+) -> Response {
+    with_store(home, move |_, s| {
+        let project = s.find_project(&slug)?;
+        s.set_status_icon(project.id, &name, p.icon.as_deref())
+    })
+    .await
+}
+
+async fn remove_status(State(home): Shared, Path((slug, name)): Path<(String, String)>) -> Response {
+    with_store(home, move |_, s| {
+        let project = s.find_project(&slug)?;
+        s.remove_status(project.id, &name)
+    })
+    .await
+}
+
 async fn delete_project(State(home): Shared, Path(slug): Path<String>) -> Response {
     with_store(home, move |h, s| {
         let project = s.find_project(&slug)?;
@@ -562,12 +634,16 @@ struct NewTask {
     project: String,
     title: String,
     description: Option<String>,
+    /// The parent's key, to make it a subtask.
+    parent: Option<String>,
 }
 
 async fn create_task(State(home): Shared, Json(t): Json<NewTask>) -> Response {
     with_store(home, move |_, s| {
         let project = s.find_project(&t.project)?;
-        s.create_task_in(project.id, &t.title, TaskPatch { description: t.description, ..Default::default() })
+        let parent = t.parent.as_deref().map(|p| s.parent_of(p)).transpose()?;
+        let patch = TaskPatch { description: t.description, parent, ..Default::default() };
+        s.create_task_in(project.id, &t.title, patch)
     })
     .await
 }
@@ -590,6 +666,7 @@ async fn update_settings(State(home): Shared, Json(r): Json<Settings>) -> Respon
 #[derive(Serialize)]
 struct TaskReply {
     blocks: Vec<store::TaskLink>,
+    children: Vec<store::Task>,
     comments: Vec<store::Comment>,
     images: Vec<store::Image>,
     task: store::Task,
@@ -600,6 +677,7 @@ async fn get_task(State(home): Shared, Path(id): Path<i64>) -> Response {
     with_store(home, move |_, s| {
         Ok(TaskReply {
             blocks: s.task_links(id, true)?,
+            children: s.subtasks(id)?,
             comments: s.list_comments(id)?,
             images: s.list_images(id)?,
             task: s.get_task(id)?,
@@ -619,11 +697,22 @@ struct Patch {
     human: Option<bool>,
     url: Option<String>,
     waits_on: Option<String>,
+    /// An account's name; "" unassigns.
+    assignee: Option<String>,
+    /// The parent's key; "" makes it a task of its own again.
+    parent: Option<String>,
 }
 
 async fn update_task(State(home): Shared, Path(id): Path<i64>, Json(p): Json<Patch>) -> Response {
     with_store(home, move |_, s| {
         let project_id = p.project.map(|slug| s.find_project(&slug)).transpose()?.map(|p| p.id);
+        let assignee = match p.assignee.as_deref().map(str::trim) {
+            None => None,
+            Some("") => Some(store::Assignee::Nobody),
+            Some(name) if name.eq_ignore_ascii_case(store::AI_AGENTS) => Some(store::Assignee::Agents),
+            Some(name) => Some(store::Assignee::Account(s.find_account(name)?.id)),
+        };
+        let parent = p.parent.as_deref().map(|key| s.parent_of(key)).transpose()?;
         s.update_task(
             id,
             TaskPatch {
@@ -635,6 +724,8 @@ async fn update_task(State(home): Shared, Path(id): Path<i64>, Json(p): Json<Pat
                 human: p.human,
                 url: p.url,
                 waits_on: p.waits_on,
+                assignee,
+                parent,
             },
         )
     })
@@ -664,6 +755,32 @@ async fn move_tasks(State(home): Shared, Json(m): Json<MoveMany>) -> Response {
 
 async fn delete_task(State(home): Shared, Path(id): Path<i64>) -> Response {
     with_store(home, move |h, s| h.deleting_images(s, ImagesOf::Task(id), || s.delete_task(id))).await
+}
+
+async fn list_accounts(State(home): Shared) -> Response {
+    with_store(home, |_, s| s.list_accounts()).await
+}
+
+#[derive(Deserialize)]
+struct NewAccount {
+    name: String,
+    kind: String,
+    project: Option<String>,
+}
+
+/// The board is the user's, so it can make any kind of account.
+async fn create_account(State(home): Shared, Json(a): Json<NewAccount>) -> Response {
+    with_store(home, move |_, s| {
+        let kind = store::Kind::parse(&a.kind)?;
+        let project = a.project.as_deref().map(str::trim).filter(|p| !p.is_empty());
+        let project_id = project.map(|p| s.find_project(p)).transpose()?.map(|p| p.id);
+        s.create_account(&a.name, kind, project_id)
+    })
+    .await
+}
+
+async fn delete_account(State(home): Shared, Path(name): Path<String>) -> Response {
+    with_store(home, move |_, s| s.delete_account(&name)).await
 }
 
 #[derive(Deserialize)]
@@ -702,7 +819,7 @@ async fn add_comment(State(home): Shared, Path(id): Path<i64>, Json(c): Json<New
         for file in &c.images {
             image_saved(h, file)?;
         }
-        s.add_comment(id, "me", &c.body, &c.images)
+        s.add_comment(id, store::BOARD_USER, &c.body, &c.images)
     })
     .await
 }
@@ -763,19 +880,9 @@ async fn save_image(State(home): Shared, headers: HeaderMap, body: Bytes) -> Rep
     if body.is_empty() {
         return Err(fail(StatusCode::BAD_REQUEST, "the image is empty"));
     }
-    let path = blocking(move || -> std::io::Result<std::path::PathBuf> {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        body.hash(&mut hasher);
-        let path = home.images().join(format!("{:016x}.{ext}", hasher.finish()));
-        if !path.exists() {
-            crate::home::write_whole(&path, &body)?;
-        }
-        Ok(path)
-    })
-    .await?
-    .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, format!("cannot save the image: {e}")))?;
-    let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    let saved = blocking(move || home.save_image(&body, ext).map(|file| (home.images().join(&file), file))).await?;
+    let (path, file) =
+        saved.map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, format!("cannot save the image: {e}")))?;
     Ok(Json(json!({ "file": file, "path": path.display().to_string() })).into_response())
 }
 

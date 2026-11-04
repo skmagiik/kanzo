@@ -64,6 +64,12 @@ aside {
 .nav a.active { background: var(--active); }
 .nav a .name { overflow: hidden; text-overflow: ellipsis; flex: 1; }
 .nav a .count { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+.nav a .template-mark { display: inline-flex; color: var(--faint); }
+.nav a .template-mark .icon { width: 14px; height: 14px; }
+.template-note { display: inline-flex; align-items: center; gap: 4px; color: var(--faint); }
+#new-project-start { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+#new-project-start[hidden] { display: none; }
+#new-project-start .field { flex: 1; width: auto; min-width: 0; }
 .nav .label { color: var(--faint); padding: 18px 10px 6px; }
 .nav .item { position: relative; }
 .nav .more {
@@ -263,6 +269,16 @@ html:not([data-hide~="waiting"]) .card.waiting:not(:hover) { opacity: .6; }
 .card .tags, .result .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .card .human-mark { flex: none; margin-top: 1px; color: var(--muted); display: inline-flex; }
 .card .human-mark .icon svg { width: 15px; height: 15px; }
+.card .progress {
+  flex: none; margin-top: 1px; padding: 0 7px; border-radius: 99px; background: var(--hover); color: var(--muted);
+  font-size: 11.5px; line-height: 20px; font-variant-numeric: tabular-nums;
+}
+.card .progress.complete { color: #2f9e44; }
+.card .parent-line {
+  margin-top: 2px; color: var(--faint); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.card .assignee, .result .assignee { display: flex; align-items: center; gap: 4px; margin-top: 6px; color: var(--muted); font-size: 12px; }
+.card .assignee .icon svg, .result .assignee .icon svg { width: 13px; height: 13px; }
 .human-field { display: flex; align-items: center; gap: 10px; }
 .props .human-field .hint { color: var(--faint); font-size: 12px; }
 .switch { position: relative; display: inline-flex; width: 34px; height: 20px; flex: none; }
@@ -327,6 +343,7 @@ html:not([data-hide~="waiting"]) .card.waiting:not(:hover) { opacity: .6; }
 .panel .title-input { font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
 .props { display: grid; grid-template-columns: 96px 1fr; gap: 8px 12px; align-items: center; color: var(--muted); }
 .props select { width: auto; padding: 4px 30px 4px 12px; border-radius: 99px; text-transform: capitalize; }
+.props #p-assignee { text-transform: none; }
 .props span { color: var(--text); }
 .props > [data-prop] { display: contents; }
 [data-hide~="description"] .desc, [data-hide~="description"] [data-prop="description"],
@@ -350,6 +367,50 @@ html:not([data-hide~="waiting"]) .card.waiting:not(:hover) { opacity: .6; }
 .links .tag { border: 0; max-width: 100%; }
 .links .tag:hover, .links .tag:focus-visible { background: var(--active); }
 .links span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; }
+.parent-field { min-width: 0; }
+.parent-row { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.parent-link, .parent-none {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; padding: 4px 12px 4px 10px; border-radius: 99px;
+  background: var(--field); color: var(--text); text-decoration: none;
+}
+.parent-link:hover, .parent-link:focus-visible { background: var(--hover); }
+.props .parent-link .mono { color: var(--muted); flex: none; }
+.parent-link .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.parent-none { width: auto; padding: 4px 12px; color: var(--faint); }
+.parent-none:hover, .parent-none:focus-visible { background: var(--hover); color: var(--muted); }
+.parent-row .ghost:not(.parent-none) { width: auto; flex: none; padding: 5px; border-radius: 8px; color: var(--faint); }
+.parent-row .ghost:not(.parent-none):hover { color: var(--text); }
+.parent-row .ghost .icon svg { width: 14px; height: 14px; }
+/* The input takes the field's place; the results hover over the rows below instead of pushing them down. */
+.parent-pick { position: relative; }
+.parent-pick .field { width: 100%; padding: 4px 12px; border-radius: 99px; }
+.parent-results {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 30;
+  max-height: 232px; overflow-y: auto; padding: 4px; background: var(--menu);
+  border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
+}
+.parent-results .note { color: var(--faint); padding: 6px 8px; font-size: 13px; }
+.parent-option {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-radius: 8px;
+  background: none; text-align: left; font-size: 13px;
+}
+.parent-option.selected { background: var(--hover); }
+.props .parent-option .mono { color: var(--faint); flex: none; }
+.parent-option .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#p-subtasks-head[hidden] { display: none; }
+.subtask {
+  display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 10px; margin: 0 -10px;
+  border-radius: 10px; color: inherit; text-decoration: none;
+}
+.subtask:hover, .subtask:focus-visible { background: var(--hover); }
+.subtask .mono { color: var(--faint); flex: none; }
+.subtask .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subtask.done .title { color: var(--muted); }
+.subtask .assignee { display: inline-flex; align-items: center; gap: 4px; flex: none; color: var(--muted); font-size: 12px; }
+.subtask .assignee .icon svg { width: 13px; height: 13px; }
+.add-subtask { width: auto; gap: 6px; margin: 2px -10px 0; padding: 6px 10px; color: var(--muted); font-size: 13px; }
+.add-subtask:hover, .add-subtask:focus-visible { color: var(--text); }
+.add-subtask .icon svg { width: 15px; height: 15px; }
 .section h3 {
   font-size: 13px; color: var(--muted); margin: 0 0 8px; font-weight: 600;
   display: flex; align-items: center; gap: 8px;
@@ -367,6 +428,12 @@ html:not([data-hide~="waiting"]) .card.waiting:not(:hover) { opacity: .6; }
 .comment .remove .icon svg { width: 14px; height: 14px; }
 @media (hover: none) { .comment .remove { visibility: visible; } }
 .comment .who b { color: var(--text); font-weight: 600; }
+.move-note { display: flex; align-items: center; gap: 6px; padding: 4px 0; font-size: 12px; color: var(--faint); min-width: 0; }
+.move-note:first-child { padding-top: 0; }
+.move-note > span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.move-note b { color: var(--muted); font-weight: 600; text-transform: capitalize; }
+.move-note .icon svg { width: 12px; height: 12px; }
+.move-note b.name { text-transform: none; }
 .thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
 .thumbs:empty { display: none; }
 #p-images { margin-top: 10px; }
@@ -385,13 +452,20 @@ html:not([data-hide~="waiting"]) .card.waiting:not(:hover) { opacity: .6; }
 .composer.dropping { background: var(--active); }
 
 .composer { position: relative; margin-top: 6px; background: var(--field); border-radius: 20px; }
-.composer textarea {
-  display: block; width: 100%; min-height: 84px; max-height: 50vh; resize: none; border: 0; background: none;
-  padding: 12px 52px 12px 16px;
+.composer .ed {
+  min-height: 64px; max-height: 50vh; overflow-y: auto; padding: 12px 16px 4px;
 }
-.composer textarea::placeholder { color: var(--faint); }
+.composer .bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px 8px; padding: 0 8px 8px 12px; min-width: 0; }
+.composer .comment-status {
+  flex: 0 1 auto; width: auto; min-width: 0; max-width: 100%; text-overflow: ellipsis; padding: 5px 26px 5px 12px; border-radius: 99px;
+  font-size: 13px; color: var(--muted); background-color: transparent; background-position: right 8px center;
+}
+.composer .comment-status:hover { background-color: var(--hover); }
+.composer .comment-status.set { color: var(--text); background-color: var(--active); }
+.composer .comment-agents { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.composer .comment-agents.off { cursor: default; opacity: .6; }
 .composer .send {
-  position: absolute; right: 8px; bottom: 8px; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%;
+  flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%;
   display: grid; place-items: center; background: var(--accent); color: var(--accent-text);
 }
 .composer .send:disabled { opacity: .25; cursor: default; }
@@ -413,6 +487,45 @@ html:not([data-hide~="waiting"]) .card.waiting:not(:hover) { opacity: .6; }
 .md th, .md td { border: 1px solid var(--active); padding: 4px 10px; text-align: left; vertical-align: top; }
 .md th { background: var(--code); font-weight: 600; }
 .md a { color: var(--link); }
+.md a.ref { text-decoration: none; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px;
+  background: color-mix(in srgb, var(--link) 10%, transparent); border-radius: 6px; padding: 1px 5px; }
+.md a.ref:hover { background: color-mix(in srgb, var(--link) 18%, transparent); }
+.md img { display: block; max-width: 100%; max-height: 360px; border-radius: 10px; margin: 4px 0; }
+/* The in-place Markdown editor (mdEditor in app.js): one .ln div per line, holding exactly the line's
+   Markdown. Lines away from the caret get .rendered, which hides their markers (.mk) and shows images. */
+.ed { position: relative; min-height: 1.5em; white-space: pre-wrap; overflow-wrap: break-word; cursor: text; }
+.ed:empty::before { content: attr(data-placeholder); position: absolute; color: var(--faint); pointer-events: none; }
+.ed .mk { color: var(--faint); }
+.ed .rendered .mk { display: none; }
+.ed .h1, .ed .h2, .ed .h3, .ed .h4 { font-size: 15px; font-weight: 600; }
+.ed .h1 { font-size: 17px; }
+.ed code, .ed .code, .ed .fence { background: var(--code); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; }
+.ed code { border-radius: 6px; padding: 1px 5px; }
+.ed .code, .ed .fence { padding: 0 12px; }
+.ed .fence.open { border-radius: 12px 12px 0 0; padding-top: 6px; }
+.ed .fence.close { border-radius: 0 0 12px 12px; padding-bottom: 6px; }
+.ed .fence .lang { color: var(--faint); font-size: 11px; }
+.ed .fence.rendered { min-height: 10px; }
+.ed .a { color: var(--link); }
+.ed .ref { color: var(--link); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px;
+  background: color-mix(in srgb, var(--link) 10%, transparent); border-radius: 6px; padding: 1px 5px; }
+.ed .quote { border-left: 3px solid var(--active); padding-left: 10px; color: var(--muted); }
+.ed .bul { display: inline-block; width: 1.3em; color: var(--muted); }
+.ed .bul::before { content: "•"; }
+.ed .task .bul::before { content: "☐"; }
+.ed .done .bul::before { content: "☑"; }
+.ed .ln:not(.rendered) .bul { display: none; }
+.ed .hr.rendered { height: 1.5em; background: linear-gradient(var(--border), var(--border)) center / 100% 1px no-repeat; }
+.ed img { display: block; max-width: 100%; max-height: 360px; border-radius: 10px; margin: 4px 0; }
+.ed .ln:not(.rendered) img { display: none; }
+.comment.flash { animation: flash 2s ease-out; border-radius: 10px; }
+@keyframes flash { from { background: color-mix(in srgb, var(--link) 18%, transparent); } to { background: transparent; } }
+.tok-k { color: #a626a4; } .tok-s { color: #50a14f; } .tok-c { color: #a0a1a7; font-style: italic; }
+.tok-n { color: #986801; } .tok-p { color: #4078f2; } .tok-v { color: #e45649; }
+@media (prefers-color-scheme: dark) {
+  .tok-k { color: #c678dd; } .tok-s { color: #98c379; } .tok-c { color: #7f848e; }
+  .tok-n { color: #d19a66; } .tok-p { color: #61afef; } .tok-v { color: #e06c75; }
+}
 
 .search-dialog {
   position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.45);
@@ -436,6 +549,15 @@ html:not([data-hide~="waiting"]) .card.waiting:not(:hover) { opacity: .6; }
 .dialog-window h2 { margin: 0; font-size: 17px; font-weight: 600; }
 .dialog-window p { margin: 0; color: var(--muted); line-height: 1.45; }
 .dialog-window .row { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+#confirm-dialog { z-index: 48; }
+#confirm-dialog .dialog-window { width: min(420px, 100%); }
+#confirm-message { white-space: pre-line; word-break: break-word; }
+.image-dialog { z-index: 46; align-items: center; padding: 24px; background: rgba(0,0,0,.7); }
+.image-window { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: min(1400px, 100%); }
+#image-view { max-width: 100%; max-height: calc(100vh - 120px); object-fit: contain; border-radius: 12px; background: var(--panel); box-shadow: var(--shadow); }
+.image-window .row { display: flex; align-items: center; gap: 8px; align-self: stretch; justify-content: flex-end; }
+.image-window a.btn { text-decoration: none; }
+.image-count { margin-right: auto; color: #fff; font-size: 13px; opacity: .8; }
 .settings-window {
   width: min(760px, 100%); height: min(460px, 76vh); display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden;
   background: var(--panel); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow);
@@ -460,6 +582,31 @@ html:not([data-hide~="waiting"]) .card.waiting:not(:hover) { opacity: .6; }
 .setting { display: flex; align-items: center; gap: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
 .setting .text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .setting .text span { color: var(--muted); font-size: 13px; }
+.accounts { display: flex; flex-direction: column; }
+.account { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--border); }
+.account .text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.account .text span { color: var(--muted); font-size: 13px; }
+.account .ghost { width: auto; padding: 6px; color: var(--muted); }
+.account .ghost:hover, .account .ghost:focus-visible { color: var(--text); }
+.account .ghost.danger:hover { color: var(--danger); background: var(--danger-bg); }
+.accounts .note { color: var(--faint); font-size: 13px; padding: 8px 0; border-top: 1px solid var(--border); }
+#account-form .field { flex: 1 1 140px; width: auto; min-width: 0; }
+#account-form .btn { margin-left: 0; }
+#columns-list { max-height: 40vh; overflow-y: auto; }
+#column-form { display: flex; flex-direction: column; gap: 8px; }
+#column-form .fields { display: flex; gap: 8px; }
+#column-form .fields .field { flex: 1 1 0; width: auto; min-width: 0; }
+.icon-pick {
+  flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 6px 8px 6px 10px; border: 0; border-radius: 99px;
+  background: var(--field); color: var(--faint);
+}
+.icon-pick:hover, .icon-pick:focus-visible, .icon-pick[aria-expanded=true] { background: var(--hover); color: var(--text); }
+.icon-pick .icon svg { width: 14px; height: 14px; }
+#column-form .icon-pick { padding: 0 10px 0 12px; border-radius: 12px; }
+.menu.icon-grid { z-index: 45; min-width: 0; display: grid; grid-template-columns: repeat(5, 32px); gap: 2px; }
+.menu .icon-cell { width: 32px; height: 32px; padding: 0; justify-content: center; }
+.menu .icon-cell .status-icon svg { width: 16px; height: 16px; }
+.menu .icon-cell.current { background: var(--active); }
 label.setting { cursor: pointer; }
 .setting.disabled, .popover form.disabled { opacity: .5; cursor: default; }
 .popover {
@@ -508,7 +655,7 @@ label.setting { cursor: pointer; }
 .toast {
   white-space: pre-line; max-width: min(640px, calc(100vw - 32px));
   position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg);
-  padding: 9px 16px; border-radius: 99px; z-index: 20; box-shadow: var(--shadow); font-weight: 500;
+  padding: 9px 16px; border-radius: 99px; z-index: 50; box-shadow: var(--shadow); font-weight: 500;
 }
 .offline { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); background: var(--danger); color: #fff; padding: 4px 12px; border-radius: 99px; font-size: 12px; z-index: 20; }
 [hidden] { display: none !important; }
@@ -598,6 +745,8 @@ html:not(.ready) aside { visibility: hidden; }
     <textarea class="inline title-input" id="p-title" rows="1" spellcheck="false" placeholder="Task title"></textarea>
     <div class="props">
       Status <span><select class="field" id="p-status"></select></span>
+      <div data-prop="assignee">Assignee <span><select class="field" id="p-assignee" aria-label="Assignee"></select></span></div>
+      <div data-prop="parent">Parent <span class="parent-field" id="p-parent"></span></div>
       <div data-prop="tags">Tags <span><input class="inline" id="p-tags" placeholder="Add tags, like bug, ui" autocomplete="off" spellcheck="false"></span></div>
       <div data-prop="url">URL <span><input class="inline" id="p-url" type="url" placeholder="Add a link, like a pull request" autocomplete="off" spellcheck="false"></span></div>
       <div data-prop="human">Human <span class="human-field"><label class="switch"><input type="checkbox" id="p-human" aria-label="Human task"><span></span></label><span class="hint">Agents skip it</span></span></div>
@@ -608,17 +757,26 @@ html:not(.ready) aside { visibility: hidden; }
     </div>
     <div class="section" data-prop="description">
       <h3>Description</h3>
-      <textarea class="inline desc-input" id="p-desc" rows="1" placeholder="Add a description (Markdown)"></textarea>
+      <div class="inline desc-input ed" id="p-desc" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Description" data-placeholder="Add a description (Markdown)"></div>
       <div class="inline md desc-view" id="p-desc-view" tabindex="0" role="button" aria-label="Edit description" hidden></div>
       <div class="thumbs" id="p-images"></div>
+    </div>
+    <div class="section" id="p-subtasks">
+      <h3 id="p-subtasks-head">Subtasks <span class="count" id="p-subtasks-count"></span></h3>
+      <div class="subtasks" id="p-children"></div>
+      <button type="button" class="ghost add-subtask" id="p-add-subtask"><span class="icon" data-icon="plus"></span>Add subtask</button>
     </div>
     <div class="section" data-prop="comments">
       <h3>Comments <span class="count" id="p-comment-count"></span></h3>
       <div id="p-comments"></div>
       <form class="composer" id="p-comment-form">
         <div class="thumbs" id="p-pending"></div>
-        <textarea id="p-comment" rows="2" placeholder="Add a comment"></textarea>
-        <button class="send" id="p-send" type="submit" title="Send (⌘↵)" aria-label="Send comment" disabled><span class="icon" data-icon="send"></span></button>
+        <div class="ed" id="p-comment" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Comment" data-placeholder="Add a comment"></div>
+        <div class="bar">
+          <select class="field comment-status" id="p-comment-status" aria-label="Status after sending" title="Status after sending"></select>
+          <label class="comment-agents" title="Queue for AI agents without moving it"><input type="checkbox" id="p-comment-agents">Assign to AI Agents</label>
+          <button class="send" id="p-send" type="submit" title="Send (⌘↵)" aria-label="Send comment" disabled><span class="icon" data-icon="send"></span></button>
+        </div>
       </form>
     </div>
   </div>
@@ -634,6 +792,7 @@ html:not(.ready) aside { visibility: hidden; }
       <nav id="settings-nav">
         <button class="ghost" data-section="board"><span class="icon" data-icon="board"></span>Board</button>
         <button class="ghost" data-section="sync"><span class="icon" data-icon="sync"></span>Sync</button>
+        <button class="ghost" data-section="accounts"><span class="icon" data-icon="human"></span>Accounts</button>
         <button class="ghost" data-section="about"><span class="icon" data-icon="info"></span>About</button>
       </nav>
       <section class="settings-pane" data-section="board">
@@ -655,6 +814,21 @@ html:not(.ready) aside { visibility: hidden; }
           <button class="btn primary" type="submit" id="sync-save">Save and sync</button>
         </div>
       </form>
+      <section class="settings-pane" data-section="accounts">
+        <h3>Accounts</h3>
+        <p>Who can work the board. Each account has its own token, so you can tell people and agents apart.</p>
+        <form class="row" id="account-form">
+          <input class="field" id="account-name" placeholder="Name" aria-label="Account name" required autocomplete="off" spellcheck="false">
+          <select class="field" id="account-kind" aria-label="Kind">
+            <option value="human">Human</option>
+            <option value="orchestrator">Orchestrator</option>
+            <option value="agent" selected>Task agent</option>
+          </select>
+          <select class="field" id="account-project" aria-label="Project"></select>
+          <button class="btn primary" type="submit">Add</button>
+        </form>
+        <div class="accounts" id="accounts-list"></div>
+      </section>
       <section class="settings-pane" data-section="about">
         <h3>About</h3>
         <div class="setting">
@@ -698,17 +872,57 @@ html:not(.ready) aside { visibility: hidden; }
     <input class="field" name="slug" placeholder="Slug, like api" aria-label="Slug" required autocomplete="off" spellcheck="false" pattern="[a-zA-Z0-9][a-zA-Z0-9\-]{0,31}" title="Letters, digits and -, up to 32">
     <input class="field" name="name" placeholder="Name (optional)" aria-label="Name" autocomplete="off">
     <input class="field" name="repo" placeholder="GitHub owner/repo (optional)" aria-label="GitHub repo" autocomplete="off" spellcheck="false">
+    <label id="new-project-start">Start from <select class="field" name="template" id="new-project-template" aria-label="Start from"></select></label>
     <div class="row">
       <button class="btn" type="button" id="new-project-cancel">Cancel</button>
       <button class="btn primary" type="submit">Create</button>
     </div>
   </form>
 </div>
+<div class="search-dialog" id="columns-dialog" hidden>
+  <div class="dialog-window" role="dialog" aria-labelledby="columns-title">
+    <h2 id="columns-title">Columns</h2>
+    <p>Extra statuses on this project's board. Agents read each one's description to know when to use it.</p>
+    <div class="accounts" id="columns-list"></div>
+    <form id="column-form">
+      <div class="fields">
+        <input class="field" name="name" placeholder="Name, like testing" aria-label="Column name" required autocomplete="off" spellcheck="false">
+        <select class="field" id="column-after" aria-label="Place after"></select>
+        <button class="icon-pick" id="column-icon" type="button" aria-label="Column icon" title="Icon"></button>
+      </div>
+      <input class="field" name="description" placeholder="What it means, for people and agents" aria-label="Column description" required autocomplete="off">
+      <div class="row">
+        <button class="btn" type="button" id="columns-close">Close</button>
+        <button class="btn primary" type="submit">Add column</button>
+      </div>
+    </form>
+  </div>
+</div>
 <div class="search-dialog" id="search-dialog" hidden>
   <div class="search-window" role="dialog" aria-label="Search tasks">
     <label class="search-field"><span class="icon" data-icon="search"></span><span class="query"><span class="query-mirror" aria-hidden="true"><span></span></span><input id="search" type="search" placeholder="Search tasks" autocomplete="off" spellcheck="false" aria-label="Search tasks"></span></label>
     <div class="results" id="search-results"></div>
   </div>
+</div>
+<div class="search-dialog" id="confirm-dialog" hidden>
+  <div class="dialog-window" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-message"></p>
+    <div class="row">
+      <button class="btn" type="button" id="confirm-cancel">Cancel</button>
+      <button class="btn primary" type="button" id="confirm-ok">OK</button>
+    </div>
+  </div>
+</div>
+<div class="search-dialog image-dialog" id="image-dialog" hidden>
+  <figure class="image-window" role="dialog" aria-modal="true" aria-label="Image">
+    <img id="image-view" alt="Attached image">
+    <figcaption class="row">
+      <span class="image-count" id="image-count"></span>
+      <a class="btn" id="image-original" target="_blank" rel="noopener">Open original</a>
+      <button class="btn primary" type="button" id="image-close">Close</button>
+    </figcaption>
+  </figure>
 </div>
 
 <div class="offline" id="offline" hidden>Board not reachable — is kanzo running?</div>

@@ -81,7 +81,9 @@ The board opens at http://localhost:4242. That's all the setup there is: the fir
 - **Select tasks:** `⌘`-click them, or drag on empty board space, then move, tag or delete them together. Drag one and the rest follow.
 - **List view:** the list icon shows the same tasks as rows to sort and group.
 - **Human tasks:** mark a task Human and agents leave it to you. The person icon shows only those.
-- **Images:** paste or drop one into a task or a comment.
+- **Images:** paste or drop one into a task or a comment. Agents attach screenshots to their comments too, and see the images in yours.
+- **Markdown:** descriptions and comments render in place as you type, as in Obsidian's Live Preview: the line you're on shows its Markdown, the rest show rendered, with board images inline. Code blocks are highlighted for C, C++, Rust, Python, assembly, Bash and JavaScript/TypeScript.
+- **Task links:** write `api#12` (or `#12` in the same project) to link a task, `api#12/c34` to link a comment (its link icon copies that), and `[[api]]` to link a project.
 - **Links:** give a task a URL, like its pull request, and open it from its card. Agents set it with `url`.
 - **Files:** `[name](file:///path)` in a description or comment opens in your editor.
 - **Task panel:** drag its left edge to resize it, or expand it to the whole window. Double-click the edge to reset it.
@@ -111,6 +113,26 @@ Then ask: *"take the next task from kanzo and do it."* The agent:
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/task-dark.jpg">
   <img alt="A task open on the board, with Claude Code's comments, one saying how to resume its session, and a reply" src="docs/img/task-light.jpg">
 </picture>
+
+## Run a team of agents
+
+Accounts tell people and agents apart. Each one has a token, which an agent passes as `token` on every Kanzo call; without one, an agent works as before.
+
+| Kind | Can |
+| --- | --- |
+| Human | Everything, like the board; only a human makes human accounts |
+| Orchestrator | Make tasks, comment, assign tasks to task agents, make task agents, and hand finished work to you |
+| Task agent | See only the tasks assigned to it, comment on them, move them to `doing`, `blocked`, `review` or a project's own column, and hand them back to a person or to nobody |
+
+The work goes round like this:
+
+1. You make a project and its tasks, and assign the ones for agents to **AI Agents** in the task's panel.
+2. An orchestrator registers itself with `register`, which names it after the project, like *Kanzo Orchestrator*, and gives it a token.
+3. It calls `next_task`, which hands the top task queued for AI Agents to a task agent with nothing left to do, or to a new one named *Kanzo Agent 2*. It starts that agent with the agent's token. `assign_task` hands out a particular task.
+4. The agent works the task, comments as it goes, and moves it to `blocked` when stuck or `review` when done.
+5. The orchestrator reviews it: it marks it Human for you to review, or calls `assign_task` again to hand a blocked task to another agent.
+
+Make accounts from the terminal with `kanzo account add`, or in Settings, under Accounts, which lists the tokens too. A task's panel assigns it to you, another person, or AI Agents; once an orchestrator hands it on, the card shows the agent working on it. Orchestrators never take a task assigned to a person. Every move and every change of assignee shows among the task's comments, with who made it. Tokens say who is calling, not who is allowed in: anyone who can reach the board or its file can read them.
 
 ## Park ideas in a backlog
 
@@ -165,6 +187,18 @@ The board's filter (`f`), search (`/`) and the `filter` of `list_tasks` and `nex
 | `has:`, `no:` | `description`, `tags`, `url`, `comments` or `images` | `has:url`, `no:tags` |
 
 Anything else is plain text. Use quotes for a phrase, `"on hold"`, or to look for text that reads like a qualifier, `"tag:bug"`. Agents can't filter through a property you've hidden in Settings.
+
+## Add a project's own columns
+
+Add columns to a project from its ⋯ menu, under Columns, like `qa` after `review`, and pick each one's icon. Each one has a description, which agents read in `list_projects`, so they know when to move a task there. Only you add or remove columns; agents and orchestrators move tasks into them. A column can be removed once it's empty.
+
+## Break tasks into subtasks
+
+A task's panel has a Parent field: pick any task, by key or title, to make this one its subtask. The parent lists its subtasks with their progress, and Add subtask makes a new one under it; cards show `↳ parent` on subtasks and `☑ 2/5` on parents. Agents see the same in `get_task`, and orchestrators break work up with `create_task` and its `parent`. Deleting a parent leaves its subtasks as tasks of their own, and a template's subtasks stay under their parent in projects made from it.
+
+## Start projects from templates
+
+Mark a project as a template from its ⋯ menu, under Use as template. New projects can then start from it: pick it under Start from when you create one, or choose New project from this template in its menu. The new project gets the template's own columns and its tasks that aren't done, with their descriptions, tags, images and AI Agents or people assignees; comments stay behind. Agents never take a template's own tasks, so a template can hold work queued for AI Agents that only starts in the projects made from it.
 
 ## Use it on several computers
 
@@ -248,10 +282,14 @@ From then on, choose Sync, or run `kanzo sync`, when you switch machines. It com
 | `kanzo sync` | Commits the board and pulls or pushes it; `--repo <url>` sets the repo, `--keep-local` or `--keep-remote` when both sides changed |
 | `kanzo export` | Prints the board as Markdown; `-f json` for JSON, `-p <project>` for one project, `-o <file>` to save it |
 | `kanzo update` | Installs the latest release and restarts the board's service; the board offers new versions too |
+| `kanzo account add <name>` | Makes an account and prints its token; `-k orchestrator` or `-k agent` for other kinds, `-p <project>` for one project. `list` shows them, `remove <name>` removes one |
+| `kanzo status add <project> <name> -d <description>` | Adds a column to a project, just before done or `--after <column>`. `list` shows them, `remove <project> <name>` removes an empty one |
 | `kanzo init` | Creates the data folder; the first run does this too |
 | `kanzo --version` | Prints the version |
 
 Every command takes `--home <dir>` to use another data folder.
+
+When the program file is replaced, by `cargo install`, a rebuild or a package manager, the board and every agent's `kanzo mcp` carry on in the new one by themselves (on macOS and Linux). The board keeps its address and open pages reload. Agents keep their session and are told to fetch the tools again, so there's nothing to restart.
 
 ## Settings
 

@@ -21,11 +21,12 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 use rmcp::{ErrorData, RoleServer, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::home::Home;
 use crate::share::{self, Net};
-use crate::store::{self, Error, Project, Store, Task, TaskPatch, short_time};
+use crate::store::{self, Account, Error, Kind, Project, Store, Task, TaskPatch, short_time};
 
 /// An old board has thousands of done tasks.
 const DONE_LISTED: usize = 20;
@@ -37,9 +38,11 @@ macro_rules! instructions {
             $whose,
             " machine, for all their projects. Tasks look like api#12. ",
             $project,
-            " Keep it current unasked: doing when you start a task, comments on what you did, review when you \
-             finish or get stuck, url for a PR you opened. On review, comment how to resume this session. Leave done and human tasks to the user. \
-             Link files as [name](file:///path)."
+            " Keep it current unasked: doing when you start a task, comments on what you did, blocked when you \
+             get stuck, review when you finish, url for a PR you opened. On review, comment how to resume this \
+             session. Leave done and human tasks to the user. list_projects describes a project's own columns. \
+             Link tasks as api#12, comments as api#12/c34 and files as [name](file:///path). If you were given a \
+             Kanzo token, pass it as `token` on every call."
         )
     };
 }
@@ -57,17 +60,9 @@ pub async fn serve(home: Home) -> Result<()> {
     let images = home.images();
     let ctx = Ctx { home, cwd: Some(cwd), repos, images, host: Default::default() };
     let server = Kanzo { ctx: Arc::new(ctx), tool_router: Kanzo::tools() };
-    serve_stdio(server).await
-}
-
-#[cfg(unix)]
-use crate::stdio::serve as serve_stdio;
-
-/// Windows can't replace a running program, so there an agent's `kanzo mcp` keeps its version.
-#[cfg(not(unix))]
-async fn serve_stdio(server: Kanzo) -> Result<()> {
+    // Our relay, not rmcp's stdio: it carries the session into a rebuilt or updated program.
     use rmcp::ServiceExt;
-    let service = server.serve(rmcp::transport::stdio()).await?;
+    let service = server.serve(crate::reload::stdio()).await?;
     service.waiting().await?;
     Ok(())
 }
@@ -135,6 +130,80 @@ impl Ctx {
     }
 }
 
+/// Without a token, Kanzo trusts the caller as it always has; a token's account may do only what its kind can.
+fn caller(store: &Store, token: Option<&str>) -> store::Result<Option<Account>> {
+    match token.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(token) => store.account_by_token(token).map(Some),
+        None => Ok(None),
+    }
+}
+
+fn kind(who: Option<&Account>) -> Option<Kind> {
+    who.map(|a| a.kind)
+}
+
+fn refuse(who: Option<&Account>, what: &str) -> Error {
+    let label = who.map_or("caller without a token", |a| a.kind.label());
+    let article = if label.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+    Error::Invalid(format!("{article} {label} can't {what}"))
+}
+
+/// Creating projects, linking repos and deleting tasks are the user's.
+fn only_humans(who: Option<&Account>, what: &str) -> store::Result<()> {
+    match kind(who) {
+        Some(Kind::Orchestrator | Kind::Agent) => Err(refuse(who, what)),
+        _ => Ok(()),
+    }
+}
+
+/// An orchestrator made for one project works only in it.
+fn own_project(store: &Store, who: Option<&Account>) -> store::Result<Option<Project>> {
+    match who {
+        Some(a) if a.kind == Kind::Orchestrator => a.project.as_deref().map(|p| store.find_project(p)).transpose(),
+        _ => Ok(None),
+    }
+}
+
+/// The project an orchestrator of one project names, which can only be its own.
+fn within(own: Project, name: Option<&str>) -> store::Result<Project> {
+    match name.map(str::trim).filter(|n| !n.is_empty() && !n.eq_ignore_ascii_case("all")) {
+        Some(n) if !n.eq_ignore_ascii_case(&own.slug) => {
+            Err(Error::Invalid(format!("you are the orchestrator of {}, not of {n}", own.slug)))
+        }
+        _ => Ok(own),
+    }
+}
+
+/// Agents see only their own tasks, orchestrators only their project's.
+fn check_task(who: Option<&Account>, task: &Task) -> store::Result<()> {
+    match who {
+        Some(a) if a.kind == Kind::Agent && task.assignee.as_deref() != Some(a.name.as_str()) => {
+            Err(Error::Invalid(format!("{} is not assigned to you", task.key())))
+        }
+        Some(a) if a.kind == Kind::Orchestrator && a.project.as_ref().is_some_and(|p| *p != task.project) => {
+            Err(Error::Invalid(format!("{} is not in your project", task.key())))
+        }
+        Some(a) if a.kind != Kind::Human && task.human => {
+            Err(Error::Invalid(format!("{} is for the user, not for agents", task.key())))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn find_task(store: &Store, who: Option<&Account>, key: &TaskKey) -> store::Result<Task> {
+    let task = key.find(store)?;
+    check_task(who, &task)?;
+    Ok(task)
+}
+
+/// The project named, if any; "all" names none.
+fn named_project(store: &Store, name: Option<&str>) -> store::Result<Option<Project>> {
+    match name.map(str::trim).filter(|n| !n.is_empty() && !n.eq_ignore_ascii_case("all")) {
+        Some(n) => store.find_project(n).map(Some),
+        None => Ok(None),
+    }
+}
+
 fn reply(outcome: Result<String, String>) -> CallToolResult {
     match outcome {
         Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
@@ -142,12 +211,14 @@ fn reply(outcome: Result<String, String>) -> CallToolResult {
     }
 }
 
-/// Clients on protocol 2026-07-28 name themselves on every request; older ones did once, in `initialize`.
-fn caller(context: &RequestContext<RoleServer>) -> Option<Implementation> {
-    match context.meta.protocol_version() {
+/// The client's name. Clients on protocol 2026-07-28 name themselves on every request; older
+/// ones did once, in `initialize`.
+fn client_name(context: &RequestContext<RoleServer>) -> Option<String> {
+    let info = match context.meta.protocol_version() {
         Some(_) => context.meta.client_info(),
         None => context.peer.peer_info().map(|p| p.client_info.clone()),
-    }
+    };
+    info.map(|i| i.name).filter(|n| !n.is_empty())
 }
 
 fn git_repos(dir: &std::path::Path) -> Vec<String> {
@@ -198,6 +269,9 @@ struct CreateProjectArgs {
     name: Option<String>,
     /// GitHub owner/repo.
     repo: Option<String>,
+    /// Slug of a template project to copy columns and tasks from.
+    template: Option<String>,
+    token: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -209,6 +283,7 @@ struct ListTasksArgs {
     /// Words, or tag: status: project: title: description: url: comment: id: comments: images: created: updated:
     /// is:human is:waiting has: no:, like tag:bug -status:done. Includes done.
     filter: Option<String>,
+    token: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -216,6 +291,7 @@ struct TaskArgs {
     /// Like api#12.
     #[schemars(with = "String")]
     id: TaskKey,
+    token: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -233,6 +309,9 @@ struct CreateTaskArgs {
     human: Option<bool>,
     /// Tasks it waits on, like api#12.
     waits_on: Option<String>,
+    /// Like api#12: makes it a subtask of that task.
+    parent: Option<String>,
+    token: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -247,12 +326,17 @@ struct UpdateTaskArgs {
     status: Option<String>,
     /// Comma-separated; "" clears.
     tags: Option<String>,
-    /// For the user, not for agents.
+    /// For the user, not for agents; true asks the user to review it.
     human: Option<bool>,
     /// A link; "" clears.
     url: Option<String>,
     /// Tasks it waits on, like api#12; "" clears.
     waits_on: Option<String>,
+    /// An account's name, "AI Agents", or "" for nobody.
+    assignee: Option<String>,
+    /// Like api#12, or "" to make it a task of its own.
+    parent: Option<String>,
+    token: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -260,10 +344,13 @@ struct AddCommentArgs {
     /// Like api#12.
     #[schemars(with = "String")]
     id: TaskKey,
-    /// Markdown.
+    /// Markdown; may be "" with images.
     body: String,
-    /// Defaults to your client's name.
+    /// Images to attach, like screenshots: paths to PNG, JPEG, GIF or WebP files.
+    images: Option<Vec<String>>,
+    /// Defaults to your account, or your client's name.
     author: Option<String>,
+    token: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -272,6 +359,7 @@ struct LinkRepoArgs {
     project: String,
     /// GitHub owner/repo.
     repo: String,
+    token: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -280,6 +368,29 @@ struct NextTaskArgs {
     project: Option<String>,
     /// As in list_tasks, like tag:bug.
     filter: Option<String>,
+    token: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct AssignTaskArgs {
+    /// Like api#12.
+    #[schemars(with = "String")]
+    id: TaskKey,
+    /// Account name; by default a free task agent of the project, or a new one.
+    agent: Option<String>,
+    token: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct RegisterArgs {
+    /// human, orchestrator or agent.
+    kind: Option<String>,
+    /// Defaults to "<project> Orchestrator" or "<project> Agent <n>".
+    name: Option<String>,
+    /// Slug.
+    project: Option<String>,
+    /// Yours, if you have one.
+    token: Option<String>,
 }
 
 impl Kanzo {
@@ -355,6 +466,7 @@ impl Kanzo {
                     return Ok(NO_PROJECTS.into());
                 }
                 let here = projects.iter().find(|p| p.repos.iter().any(|r| ctx.repos.contains(r)));
+                let columns = store.custom_statuses(None)?;
                 let mut out = String::new();
                 for p in &projects {
                     out.push_str(&p.slug);
@@ -368,7 +480,13 @@ impl Kanzo {
                     if here.is_some_and(|h| h.id == p.id) {
                         out.push_str(" <- current repo");
                     }
+                    if p.template {
+                        out.push_str(" [template: agents don't take its tasks]");
+                    }
                     out.push('\n');
+                    for c in columns.iter().filter(|c| c.project == p.slug) {
+                        let _ = writeln!(out, "  column {}: {}", c.name, c.description);
+                    }
                 }
                 out.pop();
                 Ok(out)
@@ -376,16 +494,23 @@ impl Kanzo {
             .await)
     }
 
-    #[tool(description = "Create a project.")]
+    #[tool(description = "Create a project, optionally from a template project.")]
     async fn create_project(
         &self,
         Parameters(args): Parameters<CreateProjectArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(move |_, store| {
-                let p = store.create_project(&args.slug, args.name.as_deref().unwrap_or(""), args.repo.as_deref())?;
+                only_humans(caller(store, args.token.as_deref())?.as_ref(), "create projects")?;
+                let name = args.name.as_deref().unwrap_or("");
+                let p = match args.template.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                    Some(template) => store.create_project_from(&args.slug, name, args.repo.as_deref(), template)?,
+                    None => store.create_project(&args.slug, name, args.repo.as_deref())?,
+                };
                 let repo = p.repos.first().map(|r| format!(", linked to {r}")).unwrap_or_default();
-                Ok(format!("Created project {} ({}){repo}.", p.slug, p.name))
+                let tasks =
+                    if p.total > 0 { format!(" with {} {}", p.total, store::tasks(p.total)) } else { String::new() };
+                Ok(format!("Created project {} ({}){repo}{tasks}.", p.slug, p.name))
             })
             .await)
     }
@@ -394,13 +519,14 @@ impl Kanzo {
     async fn link_repo(&self, Parameters(args): Parameters<LinkRepoArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(move |_, store| {
+                only_humans(caller(store, args.token.as_deref())?.as_ref(), "link repos")?;
                 let p = store.link_repo(&args.project, &args.repo)?;
                 Ok(format!("Project {} is linked to {}.", p.slug, p.repos.join(", ")))
             })
             .await)
     }
 
-    #[tool(description = "List tasks in board order.")]
+    #[tool(description = "List tasks in board order; a task agent sees only its own.")]
     async fn list_tasks(
         &self,
         Parameters(args): Parameters<ListTasksArgs>,
@@ -408,12 +534,18 @@ impl Kanzo {
     ) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run_for(&ext, move |ctx, store| {
-                let project = ctx.scope(store, args.project.as_deref())?;
+                let who = caller(store, args.token.as_deref())?;
+                let who = who.as_ref();
+                let (project, assignee) = match (kind(who), own_project(store, who)?) {
+                    (Some(Kind::Agent), _) => (named_project(store, args.project.as_deref())?, who.map(|a| a.id)),
+                    (_, Some(own)) => (Some(within(own, args.project.as_deref())?), None),
+                    _ => (ctx.scope(store, args.project.as_deref())?, None),
+                };
                 let status = args.status.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
                 let only = match status.as_deref() {
                     Some("all") | None => None,
                     Some(s) => {
-                        store.check_status(s)?;
+                        store.check_status(project.as_ref().map(|p| p.id), s)?;
                         Some(s)
                     }
                 };
@@ -423,7 +555,8 @@ impl Kanzo {
                     (None, None) => Some(0),
                     (None, Some(_)) => Some(DONE_LISTED),
                 };
-                let (mut tasks, hidden) = store.list_tasks_keeping_done(project.as_ref().map(|p| p.id), only, keep)?;
+                let (mut tasks, hidden) =
+                    store.list_tasks_keeping_done(project.as_ref().map(|p| p.id), only, assignee, keep)?;
                 if let Some(filter) = &filter {
                     let found: HashSet<i64> = store.search_for_agent(filter)?.into_iter().map(|t| t.id).collect();
                     tasks.retain(|t| found.contains(&t.id));
@@ -442,7 +575,8 @@ impl Kanzo {
                 }
                 if out.is_empty() {
                     let scope = project.as_ref().map_or("any project", |p| p.slug.as_str());
-                    let _ = writeln!(out, "No tasks in {scope}.");
+                    let yours = if assignee.is_some() { " assigned to you" } else { "" };
+                    let _ = writeln!(out, "No tasks{yours} in {scope}.");
                 }
                 if people > 0 && shown(&properties, "human") {
                     let _ = writeln!(
@@ -470,7 +604,8 @@ impl Kanzo {
     ) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run_for(&ext, move |ctx, store| {
-                let task = args.id.find(store)?;
+                let who = caller(store, args.token.as_deref())?;
+                let task = find_task(store, who.as_ref(), &args.id)?;
                 task_detail(ctx, store, &task)
             })
             .await)
@@ -484,22 +619,114 @@ impl Kanzo {
     ) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run_for(&ext, move |ctx, store| {
-                let CreateTaskArgs { title, description, project, tags, status, human, waits_on } = args;
-                let project = ctx.project(store, project.as_deref())?;
+                let CreateTaskArgs { title, description, project, tags, status, human, waits_on, parent, token } = args;
+                let who = caller(store, token.as_deref())?;
+                let who = who.as_ref();
                 let status = status.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
-                let patch = TaskPatch { description, status, tags, human, waits_on, ..Default::default() };
+                match kind(who) {
+                    Some(Kind::Agent) => return Err(refuse(who, "create tasks")),
+                    Some(Kind::Orchestrator) if status.as_deref() == Some(store::DONE) => {
+                        return Err(refuse(who, "create done tasks"));
+                    }
+                    _ => {}
+                }
+                let project = match own_project(store, who)? {
+                    Some(own) => within(own, project.as_deref())?,
+                    None => ctx.project(store, project.as_deref())?,
+                };
+                let parent = match parent.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+                    Some(key) => Some(find_task(store, who, &TaskKey::Text(key.into()))?.id),
+                    None => None,
+                };
+                let patch = TaskPatch {
+                    description,
+                    status,
+                    tags,
+                    human,
+                    waits_on,
+                    parent: parent.map(Some),
+                    ..Default::default()
+                };
                 let t = store.create_task_in(project.id, &title, patch)?;
                 Ok(format!("Created {} in {}: {}{}", t.key(), t.status, t.title, waits_note(store, &t)?))
             })
             .await)
     }
 
-    #[tool(description = "Change the fields you pass.")]
-    async fn update_task(&self, Parameters(args): Parameters<UpdateTaskArgs>) -> Result<CallToolResult, ErrorData> {
+    #[tool(description = "Change the fields you pass. A task agent can set status (doing, blocked, review or a \
+                          project's own column) and hand its task back: assignee \"\" or a person, or human true.")]
+    async fn update_task(
+        &self,
+        Parameters(args): Parameters<UpdateTaskArgs>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = client_name(&context);
         Ok(self
             .run(move |_, store| {
-                let before = args.id.find(store)?;
-                let status = args.status.map(|s| s.trim().to_ascii_lowercase());
+                let who = caller(store, args.token.as_deref())?;
+                let who = who.as_ref();
+                store.acting_as(&actor(who, None, client));
+                let before = find_task(store, who, &args.id)?;
+                let status = args.status.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
+                let assignee = match args.assignee.as_deref().map(str::trim) {
+                    None => None,
+                    Some("") => Some((store::Assignee::Nobody, None)),
+                    Some(n) if n.eq_ignore_ascii_case(store::AI_AGENTS) => Some((store::Assignee::Agents, None)),
+                    Some(n) => {
+                        let a = store.find_account(n)?;
+                        Some((store::Assignee::Account(a.id), Some(a)))
+                    }
+                };
+                let to = assignee.as_ref().map(|(_, a)| a.as_ref());
+                let parent = match args.parent.as_deref().map(str::trim) {
+                    None => None,
+                    Some("") => Some(None),
+                    Some(key) => Some(Some(find_task(store, who, &TaskKey::Text(key.into()))?.id)),
+                };
+                match kind(who) {
+                    Some(Kind::Agent) => {
+                        if args.title.is_some() || args.description.is_some() || args.tags.is_some() || parent.is_some()
+                        {
+                            return Err(refuse(who, "edit tasks; comment instead"));
+                        }
+                        if args.human == Some(false) {
+                            return Err(refuse(who, "take a task back from the user"));
+                        }
+                        // It can only hand its task back: to nobody, or to a person.
+                        if let Some(to) = to
+                            && !matches!(assignee, Some((store::Assignee::Nobody, _)))
+                            && to.is_none_or(|a| a.kind != Kind::Human)
+                        {
+                            return Err(refuse(who, "assign tasks; hand yours back with assignee \"\" or a person"));
+                        }
+                        if let Some(s) = status.as_deref() {
+                            let project = store.find_project(&before.project)?;
+                            let mut allowed =
+                                vec![store::DOING.to_string(), store::BLOCKED.into(), store::REVIEW.into()];
+                            allowed.extend(store.custom_statuses(Some(project.id))?.into_iter().map(|c| c.name));
+                            if !allowed.iter().any(|a| a == s) {
+                                return Err(refuse(who, &format!("move tasks there; use {}", allowed.join(", "))));
+                            }
+                        }
+                    }
+                    Some(Kind::Orchestrator) => {
+                        if status.as_deref() == Some(store::DONE) {
+                            return Err(refuse(who, "mark tasks done; pass human true to ask the user to review it"));
+                        }
+                        if args.human == Some(false) {
+                            return Err(refuse(who, "take a task back from the user"));
+                        }
+                        if let Some(Some(a)) = to {
+                            if a.kind == Kind::Orchestrator {
+                                return Err(Error::Invalid(format!("{} is an orchestrator, not a task agent", a.name)));
+                            }
+                            if let Some(p) = a.project.as_ref().filter(|p| **p != before.project) {
+                                return Err(Error::Invalid(format!("{} works on {p}, not {}", a.name, before.project)));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
                 let after = store.update_task(
                     before.id,
                     TaskPatch {
@@ -511,55 +738,107 @@ impl Kanzo {
                         human: args.human,
                         url: args.url,
                         waits_on: args.waits_on,
+                        assignee: assignee.map(|(a, _)| a),
+                        parent,
                     },
                 )?;
-                let moved = if before.status != after.status {
+                let mut moved = if before.status != after.status {
                     format!(", {} -> {}", before.status, after.status)
                 } else {
                     String::new()
                 };
+                if after.human && !before.human {
+                    moved.push_str(", now for the user");
+                } else if before.human && !after.human {
+                    moved.push_str(", now for agents");
+                }
+                if after.assignee != before.assignee {
+                    match &after.assignee {
+                        Some(a) => moved.push_str(&format!(", now assigned to {a}")),
+                        None => moved.push_str(", now unassigned"),
+                    }
+                }
                 Ok(format!("Updated {}{moved}: {}{}", after.key(), after.title, waits_note(store, &after)?))
             })
             .await)
     }
 
-    #[tool(description = "Comment on a task, like to report progress.")]
+    #[tool(description = "Comment on a task, like to report progress. Attach screenshots with images.")]
     async fn add_comment(
         &self,
         Parameters(args): Parameters<AddCommentArgs>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = caller(&context).map(|i| i.name).filter(|n| !n.is_empty());
-        let author = args.author.filter(|a| !a.trim().is_empty()).or(client).unwrap_or_else(|| "agent".into());
+        let client = client_name(&context);
         Ok(self
-            .run(move |_, store| {
-                let task = args.id.find(store)?;
-                store.add_comment(task.id, &author, &args.body, &[])?;
-                Ok(format!("Comment added to {} as {author}.", task.key()))
+            .run(move |ctx, store| {
+                let who = caller(store, args.token.as_deref())?;
+                let task = find_task(store, who.as_ref(), &args.id)?;
+                let author = actor(who.as_ref(), args.author, client);
+                let files = save_images(ctx, &args.images.unwrap_or_default())?;
+                store.add_comment(task.id, &author, &args.body, &files)?;
+                let images = match files.len() {
+                    0 => String::new(),
+                    1 => " with an image".into(),
+                    n => format!(" with {n} images"),
+                };
+                Ok(format!("Comment added to {}{images} as {author}.", task.key()))
             })
             .await)
     }
 
-    #[tool(description = "Take the top todo task, move it to doing and show it.")]
+    #[tool(description = "Take the top todo task, move it to doing and show it. A task agent gets its own; an \
+                          orchestrator hands the top task queued for AI Agents to a task agent.")]
     async fn next_task(
         &self,
         Parameters(args): Parameters<NextTaskArgs>,
         ext: Extensions,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
+        let client = client_name(&context);
         Ok(self
             .run_for(&ext, move |ctx, store| {
-                let project = ctx.scope(store, args.project.as_deref())?;
+                let who = caller(store, args.token.as_deref())?;
+                let who = who.as_ref();
+                store.acting_as(&actor(who, None, client));
+                let (project, assignee) = match kind(who) {
+                    Some(Kind::Agent) => (named_project(store, args.project.as_deref())?, who.map(|a| a.id)),
+                    Some(Kind::Orchestrator) => {
+                        let project = match own_project(store, who)? {
+                            Some(own) => within(own, args.project.as_deref())?,
+                            None => ctx.project(store, args.project.as_deref())?,
+                        };
+                        let Some(task) = store.queued_for_agents(project.id)? else {
+                            return Ok(format!(
+                                "Nothing in todo for {} is queued for {}.",
+                                project.slug,
+                                store::AI_AGENTS
+                            ));
+                        };
+                        let (agent, created) = store.assign_agent(task.id)?;
+                        let task = store.get_task(task.id)?;
+                        return Ok(format!(
+                            "{}\nStart it with token {} and task {}.\n\n{}",
+                            assigned(&task, &agent, created),
+                            agent.token,
+                            task.key(),
+                            task_detail(ctx, store, &task)?
+                        ));
+                    }
+                    _ => (ctx.scope(store, args.project.as_deref())?, None),
+                };
                 let id = project.as_ref().map(|p| p.id);
                 let filter = args.filter.as_deref().unwrap_or("");
-                match store.next_task_matching(id, filter)? {
+                match store.next_task_matching(id, assignee, filter)? {
                     Some(task) => Ok(format!("Moved to {}:\n{}", task.status, task_detail(ctx, store, &task)?)),
                     None => {
-                        let waiting = store.waiting_in_todo(id, filter)?;
+                        let waiting = store.waiting_in_todo(id, assignee, filter)?;
                         let scope = project.map_or("any project".into(), |p| p.slug);
+                        let yours = if assignee.is_some() { " assigned to you" } else { "" };
                         Ok(match waiting {
-                            0 => format!("Nothing in todo for {scope}."),
-                            1 => format!("Nothing ready in todo for {scope}: 1 task waits on others."),
-                            n => format!("Nothing ready in todo for {scope}: {n} tasks wait on others."),
+                            0 => format!("Nothing in todo{yours} for {scope}."),
+                            1 => format!("Nothing ready in todo{yours} for {scope}: 1 task waits on others."),
+                            n => format!("Nothing ready in todo{yours} for {scope}: {n} tasks wait on others."),
                         })
                     }
                 }
@@ -571,6 +850,7 @@ impl Kanzo {
     async fn delete_task(&self, Parameters(args): Parameters<TaskArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(move |ctx, store| {
+                only_humans(caller(store, args.token.as_deref())?.as_ref(), "delete tasks")?;
                 let task = args.id.find(store)?;
                 let properties = store.hidden_properties()?;
                 ctx.home.deleting_images(store, store::ImagesOf::Task(task.id), || store.delete_task(task.id))?;
@@ -581,6 +861,113 @@ impl Kanzo {
                     n => format!(" and its {n} comments"),
                 };
                 Ok(format!("Deleted {}{comments}: {}", task.key(), task.title))
+            })
+            .await)
+    }
+
+    #[tool(description = "Assign a task to a task agent, by default a free or new one of its project. Replies with \
+                          the agent's token.")]
+    async fn assign_task(
+        &self,
+        Parameters(args): Parameters<AssignTaskArgs>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = client_name(&context);
+        Ok(self
+            .run(move |_, store| {
+                let who = caller(store, args.token.as_deref())?;
+                let who = who.as_ref();
+                store.acting_as(&actor(who, None, client));
+                if kind(who) == Some(Kind::Agent) {
+                    return Err(refuse(who, "assign tasks"));
+                }
+                let task = find_task(store, who, &args.id)?;
+                if task.status == store::DONE {
+                    return Err(Error::Invalid(format!("{} is done", task.key())));
+                }
+                if kind(who) == Some(Kind::Orchestrator)
+                    && let Some(name) = task.assignee.as_deref().filter(|a| *a != store::AI_AGENTS)
+                    && store.find_account(name)?.kind == Kind::Human
+                {
+                    return Err(Error::Invalid(format!("{} is assigned to {name}, a person", task.key())));
+                }
+                let (agent, created) = match args.agent.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+                    Some(name) => {
+                        let agent = store.find_account(name)?;
+                        if kind(who) == Some(Kind::Orchestrator) {
+                            if agent.kind != Kind::Agent {
+                                return Err(Error::Invalid(format!("{} is not a task agent", agent.name)));
+                            }
+                            if let Some(p) = agent.project.as_ref().filter(|p| **p != task.project) {
+                                return Err(Error::Invalid(format!(
+                                    "{} works on {p}, not {}",
+                                    agent.name, task.project
+                                )));
+                            }
+                        }
+                        let patch =
+                            TaskPatch { assignee: Some(store::Assignee::Account(agent.id)), ..Default::default() };
+                        store.update_task(task.id, patch)?;
+                        (agent, false)
+                    }
+                    None => store.assign_agent(task.id)?,
+                };
+                Ok(format!(
+                    "{}, token {}\nStart the agent with its token and the task id.",
+                    assigned(&task, &agent, created),
+                    agent.token
+                ))
+            })
+            .await)
+    }
+
+    #[tool(description = "Make an account and its token. Without a token, only an orchestrator; an orchestrator \
+                          makes task agents; only humans make humans.")]
+    async fn register(
+        &self,
+        Parameters(args): Parameters<RegisterArgs>,
+        ext: Extensions,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(self
+            .run_for(&ext, move |ctx, store| {
+                let who = caller(store, args.token.as_deref())?;
+                let who = who.as_ref();
+                let new = match args.kind.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+                    Some(k) => Kind::parse(k)?,
+                    None if kind(who) == Some(Kind::Orchestrator) => Kind::Agent,
+                    None => Kind::Orchestrator,
+                };
+                let allowed = match kind(who) {
+                    None => new == Kind::Orchestrator,
+                    Some(Kind::Human) => true,
+                    Some(Kind::Orchestrator) => new == Kind::Agent,
+                    Some(Kind::Agent) => false,
+                };
+                if !allowed {
+                    return Err(refuse(who, &format!("register a {}", new.label())));
+                }
+                let project = match (new, own_project(store, who)?) {
+                    (Kind::Human, _) => None,
+                    (_, Some(own)) => Some(within(own, args.project.as_deref())?),
+                    _ if args.project.is_some() => named_project(store, args.project.as_deref())?,
+                    _ => ctx.project(store, None).ok(),
+                };
+                let name = args.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
+                let account = match (name, new, &project) {
+                    (Some(name), ..) => store.create_account(name, new, project.as_ref().map(|p| p.id))?,
+                    (None, Kind::Agent, Some(p)) => store.create_agent(p)?,
+                    (None, Kind::Orchestrator, Some(p)) => {
+                        store.create_account(&format!("{} Orchestrator", p.name), new, Some(p.id))?
+                    }
+                    _ => return Err(Error::Invalid("pass a name, or a project to name the account after".into())),
+                };
+                let scope = account.project.as_deref().map(|p| format!(" for {p}")).unwrap_or_default();
+                Ok(format!(
+                    "Registered {} ({}{scope}), token {}\nPass it as `token` on every Kanzo call.",
+                    account.name,
+                    account.kind.label(),
+                    account.token
+                ))
             })
             .await)
     }
@@ -606,13 +993,32 @@ impl ServerHandler for Kanzo {
             }
             let client = share::handshake(context.peer.peer_info().as_deref(), &context.meta);
             let upstream = upstream.as_mut().expect("set above");
-            let outcome = upstream.call(client, &request.name, request.arguments).await;
+            let mut args = request.arguments;
+            // The shared board can't read this computer's files: images go up first, by name.
+            if request.name == "add_comment"
+                && let Some(Value::Array(images)) = args.as_mut().and_then(|a| a.get_mut("images"))
+            {
+                for entry in images.iter_mut() {
+                    let Some(path) = entry.as_str() else { continue };
+                    let path = resolve(Some(cwd), path);
+                    let saved = match read_image(&path) {
+                        Ok((bytes, ext)) => upstream.upload_image(bytes, ext).await,
+                        Err(e) => Err(e.to_string()),
+                    };
+                    match saved {
+                        Ok(file) => *entry = Value::String(file),
+                        Err(e) => return Ok(reply(Err(e)).into()),
+                    }
+                }
+            }
+            let outcome = upstream.call(client, &request.name, args).await;
             return Ok(reply(outcome).into());
         }
         self.tool_router.call(ToolCallContext::new(self, request, context)).await
     }
 
     fn get_info(&self) -> ServerConfig {
+        // A rebuilt Kanzo may bring other tools; see `reload`.
         ServerConfig::new(ServerCapabilities::builder().enable_tools().enable_tool_list_changed().build())
             .with_server_info(Implementation::new("kanzo", env!("CARGO_PKG_VERSION")))
             .with_instructions(if self.ctx.cwd.is_some() { INSTRUCTIONS } else { HTTP_INSTRUCTIONS })
@@ -623,8 +1029,68 @@ fn shown(hidden: &[String], property: &str) -> bool {
     !hidden.iter().any(|p| p == property)
 }
 
+/// A path an agent passed, from the folder it works in.
+fn resolve(cwd: Option<&PathBuf>, path: &str) -> PathBuf {
+    let path = PathBuf::from(path.trim());
+    match cwd {
+        Some(cwd) if path.is_relative() => cwd.join(path),
+        _ => path,
+    }
+}
+
+fn read_image(path: &std::path::Path) -> store::Result<(Vec<u8>, &'static str)> {
+    let shown = path.display();
+    let size = std::fs::metadata(path).map_err(|e| Error::Invalid(format!("cannot read {shown}: {e}")))?.len();
+    if size > store::IMAGE_LIMIT as u64 {
+        return Err(Error::Invalid(format!("{shown} is larger than {} MB", store::IMAGE_LIMIT >> 20)));
+    }
+    let bytes = std::fs::read(path).map_err(|e| Error::Invalid(format!("cannot read {shown}: {e}")))?;
+    match store::image_type(&bytes) {
+        Some(ext) => Ok((bytes, ext)),
+        None => Err(Error::Invalid(format!("{shown} isn't a PNG, JPEG, GIF or WebP image"))),
+    }
+}
+
+/// Saves the images attached to a comment and returns their file names. An entry is a path, or the
+/// name of an image the board already has, as a joined computer sends it.
+fn save_images(ctx: &Ctx, entries: &[String]) -> store::Result<Vec<String>> {
+    let dir = ctx.home.images();
+    entries
+        .iter()
+        .map(|entry| {
+            let entry = entry.trim();
+            if store::valid_image_file(entry) && dir.join(entry).is_file() {
+                return Ok(entry.to_string());
+            }
+            let (bytes, ext) = read_image(&resolve(ctx.cwd.as_ref(), entry))?;
+            ctx.home.save_image(&bytes, ext).map_err(|e| Error::Invalid(format!("cannot save {entry}: {e}")))
+        })
+        .collect()
+}
+
+/// Who comments and moves are by: an account is always itself; without one, the name the
+/// agent gave, then its client's.
+fn actor(who: Option<&Account>, named: Option<String>, client: Option<String>) -> String {
+    match who {
+        Some(a) => a.name.clone(),
+        None => named.filter(|a| !a.trim().is_empty()).or(client).unwrap_or_else(|| "agent".into()),
+    }
+}
+
+fn assigned(task: &Task, agent: &Account, created: bool) -> String {
+    let new = if created { "new task agent " } else { "" };
+    format!("Assigned {} ({}) to {new}{}", task.key(), task.status, agent.name)
+}
+
 fn task_line(out: &mut String, t: &Task, hidden: &[String]) {
-    let _ = write!(out, "{} [{}] {}", t.key(), t.status, t.title);
+    let _ = write!(out, "{} [{}", t.key(), t.status);
+    if let Some(a) = &t.assignee {
+        let _ = write!(out, " @{a}");
+    }
+    let _ = write!(out, "] {}", t.title);
+    if let Some(p) = &t.parent {
+        let _ = write!(out, " (sub of {p})");
+    }
     if shown(hidden, "tags") {
         write_tags(out, t);
     }
@@ -679,6 +1145,12 @@ fn task_detail(ctx: &Ctx, store: &Store, t: &Task) -> store::Result<String> {
     if shown(&hidden, "waiting") {
         write_waits(&mut out, t);
     }
+    if let Some(a) = &t.assignee {
+        let _ = write!(out, ", assigned to {a}");
+    }
+    if let Some(p) = &t.parent {
+        let _ = write!(out, ", subtask of {p}");
+    }
     if t.human && shown(&hidden, "human") {
         out.push_str(", human: for the user, not for agents");
     }
@@ -699,10 +1171,26 @@ fn task_detail(ctx: &Ctx, store: &Store, t: &Task) -> store::Result<String> {
     if !own.is_empty() {
         let _ = writeln!(out, "\nImages: {}", own.join(", "));
     }
+    let subtasks = store.subtasks(t.id)?;
+    if !subtasks.is_empty() {
+        let done = subtasks.iter().filter(|s| s.status == store::DONE).count();
+        let _ = writeln!(out, "\nSubtasks ({done}/{} done):", subtasks.len());
+        for mut s in subtasks {
+            // Listed under its parent, it needn't name it again.
+            s.parent = None;
+            out.push_str("- ");
+            task_line(&mut out, &s, &hidden);
+            out.push('\n');
+        }
+    }
     if !comments.is_empty() {
-        let _ = writeln!(out, "\nComments ({}):", comments.len());
+        let _ = writeln!(out, "\nComments ({}):", t.comments);
         for c in &comments {
-            let _ = write!(out, "- {}, {}: {}", c.author, short_time(&c.created_at), c.body);
+            if c.is_note() {
+                let _ = writeln!(out, "- {} by {}, {}", c.body, c.author, short_time(&c.created_at));
+                continue;
+            }
+            let _ = write!(out, "- c{} {}, {}: {}", c.id, c.author, short_time(&c.created_at), c.body);
             let attached = paths(Some(c.id));
             if !attached.is_empty() {
                 let sep = if c.body.is_empty() { "" } else { " " };
