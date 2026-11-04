@@ -117,16 +117,23 @@ aside {
 #settings:hover, #settings:focus-visible, #settings.open { color: var(--text); }
 .menu .value { margin-left: auto; padding-left: 12px; color: var(--faint); font-size: 12px; }
 
-input.field, textarea.field, select.field {
+input.field, textarea.field {
   background: var(--field); border: 0; border-radius: 12px; padding: 8px 12px; width: 100%;
 }
 .field::placeholder, .inline::placeholder { color: var(--faint); }
-select.field {
-  appearance: none; -webkit-appearance: none; cursor: pointer; padding-right: 30px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238f8f8f' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat; background-position: right 10px center; background-size: 14px;
+/* A select hides behind its dropdown button, which wears the select's classes; the list floats in the body. */
+select[data-dropdown] { display: none !important; }
+.dropdown-button {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; border: 0; background: none;
+  text-align: left; white-space: nowrap; cursor: pointer;
 }
-select.field:hover { background-color: var(--hover); }
+.dropdown-button .label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dropdown-button .icon svg, .dropdown-option .icon svg { width: 14px; height: 14px; }
+.dropdown-button .chevron { color: var(--faint); }
+.dropdown-button .chevron svg { stroke-width: 2; }
+.dropdown-button:disabled { cursor: default; opacity: .6; }
+.dropdown-button.field { background: var(--field); border-radius: 12px; padding: 8px 10px 8px 12px; width: 100%; }
+.dropdown-button.field:hover, .dropdown-button.field[aria-expanded=true] { background-color: var(--hover); }
 .btn {
   border: 0; background: var(--hover); border-radius: 99px; padding: 7px 16px; font-weight: 500;
 }
@@ -324,10 +331,8 @@ html:not([data-hide~="waiting"]) .card.waiting:not(:hover) { opacity: .6; }
 .panel .top .ghost, .bulk .ghost { width: auto; padding: 6px; color: var(--muted); }
 .panel .top .ghost:hover, .bulk .ghost:hover { color: var(--text); }
 .panel .top .ghost.danger:hover, .bulk .danger:hover { color: var(--danger); background: var(--danger-bg); }
-.panel .project-pick select {
-  appearance: none; -webkit-appearance: none; border: 0; background: none; padding: 0; margin: 0;
-  font-size: inherit; color: inherit; cursor: pointer; field-sizing: content;
-}
+.panel .project-pick .dropdown-button { padding: 0; margin: 0; font-size: inherit; color: inherit; }
+.panel .project-pick .dropdown-button .chevron { display: none; }
 .panel .project-pick:hover, .panel .project-pick:focus-within { background: var(--active); color: var(--text); }
 .panel-edge { position: absolute; top: 0; bottom: 0; left: 0; width: 6px; cursor: col-resize; }
 .panel-edge:hover { background: var(--active); }
@@ -342,8 +347,8 @@ html:not([data-hide~="waiting"]) .card.waiting:not(:hover) { opacity: .6; }
 .panel .desc-view { cursor: text; }
 .panel .title-input { font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
 .props { display: grid; grid-template-columns: 96px 1fr; gap: 8px 12px; align-items: center; color: var(--muted); }
-.props select { width: auto; padding: 4px 30px 4px 12px; border-radius: 99px; text-transform: capitalize; }
-.props #p-assignee { text-transform: none; }
+.props .dropdown-button { width: auto; padding: 4px 10px 4px 12px; border-radius: 99px; text-transform: capitalize; }
+.props #p-assignee + .dropdown-button { text-transform: none; }
 .props span { color: var(--text); }
 .props > [data-prop] { display: contents; }
 [data-hide~="description"] .desc, [data-hide~="description"] [data-prop="description"],
@@ -384,19 +389,25 @@ html:not([data-hide~="waiting"]) .card.waiting:not(:hover) { opacity: .6; }
 /* The input takes the field's place; the results hover over the rows below instead of pushing them down. */
 .parent-pick { position: relative; }
 .parent-pick .field { width: 100%; padding: 4px 12px; border-radius: 99px; }
-.parent-results {
+/* One look for every dropdown list: the parent picker's results, and the lists the select buttons open. */
+.dropdown-list {
   position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 30;
   max-height: 232px; overflow-y: auto; padding: 4px; background: var(--menu);
   border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
 }
-.parent-results .note { color: var(--faint); padding: 6px 8px; font-size: 13px; }
-.parent-option {
+.dropdown-list.floating { position: fixed; right: auto; max-width: calc(100vw - 16px); }
+.dropdown-list.over-dialog { z-index: 49; }
+.dropdown-list .note { color: var(--faint); padding: 6px 8px; font-size: 13px; }
+.dropdown-option {
   display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-radius: 8px;
-  background: none; text-align: left; font-size: 13px;
+  background: none; color: var(--text); text-align: left; font-size: 13px; white-space: nowrap; text-transform: inherit;
 }
-.parent-option.selected { background: var(--hover); }
-.props .parent-option .mono { color: var(--faint); flex: none; }
-.parent-option .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dropdown-option.selected { background: var(--hover); }
+.dropdown-option.current { font-weight: 600; }
+.dropdown-option .check { margin-left: auto; color: var(--muted); }
+.dropdown-option:disabled { color: var(--faint); cursor: default; }
+.dropdown-option .mono { color: var(--faint); flex: none; }
+.dropdown-option .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #p-subtasks-head[hidden] { display: none; }
 .subtask {
   display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 10px; margin: 0 -10px;
@@ -457,8 +468,8 @@ html:not([data-hide~="waiting"]) .card.waiting:not(:hover) { opacity: .6; }
 }
 .composer .bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px 8px; padding: 0 8px 8px 12px; min-width: 0; }
 .composer .comment-status {
-  flex: 0 1 auto; width: auto; min-width: 0; max-width: 100%; text-overflow: ellipsis; padding: 5px 26px 5px 12px; border-radius: 99px;
-  font-size: 13px; color: var(--muted); background-color: transparent; background-position: right 8px center;
+  flex: 0 1 auto; width: auto; min-width: 0; max-width: 100%; gap: 4px; padding: 5px 8px 5px 12px; border-radius: 99px;
+  font-size: 13px; color: var(--muted); background-color: transparent;
 }
 .composer .comment-status:hover { background-color: var(--hover); }
 .composer .comment-status.set { color: var(--text); background-color: var(--active); }

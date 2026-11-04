@@ -347,6 +347,232 @@ function openIconPick(button, onPick) {
   (cells.find((c) => c.classList.contains("current")) || cells[0]).focus();
 }
 
+// Every <select> wears a button and a floating list in the parent picker's look. The select stays the source of
+// truth: code keeps setting its value and options, and a pick sets its value and fires its change event.
+const SELECT_VALUE = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+const DROPDOWN_HEIGHT = 232;
+const dropdowns = new WeakMap();
+let dropdownCount = 0;
+let closeOpenDropdown = null;
+
+// The control a select shows as: its button once enhanced.
+function dropdownButton(select) {
+  return dropdowns.get(select) || select;
+}
+
+function dropdown(select, opts = {}) {
+  if (select.hasAttribute("data-dropdown")) return dropdownButton(select);
+  const id = `dropdown-${++dropdownCount}`;
+  select.setAttribute("data-dropdown", id);
+  const button = el("button", { type: "button", "aria-haspopup": "listbox", "aria-expanded": "false" });
+  const iconOf = (value) => (opts.icon ? opts.icon(value) : null);
+  let list = null, rows = [], values = [], cursor = -1, typed = "", typedAt = 0;
+
+  const refresh = () => {
+    const option = select.options[select.selectedIndex];
+    button.className = `dropdown-button ${select.className}`.trim();
+    button.disabled = select.disabled;
+    button.hidden = select.hidden;
+    for (const name of ["title", "aria-label"]) {
+      const v = select.getAttribute(name);
+      if (v == null) button.removeAttribute(name);
+      else button.setAttribute(name, v);
+    }
+    const chevron = icon("chevron");
+    chevron.classList.add("chevron");
+    button.replaceChildren(...[option ? iconOf(option.value) : null,
+      el("span", { class: "label" }, option ? option.textContent : ""), chevron].filter(Boolean));
+    if (list) {
+      if (button.disabled || button.hidden) close();
+      else { draw(); place(); }
+    }
+  };
+
+  // The keyboard cursor stays on the same value when the options are rebuilt under an open list.
+  const draw = () => {
+    const keep = cursor >= 0 ? values[cursor] : select.value;
+    const options = Array.from(select.options);
+    values = options.map((o) => o.value);
+    rows = options.map((o, i) => {
+      const current = i === select.selectedIndex;
+      return el("button", { type: "button", tabindex: "-1", id: `${id}-${i}`, role: "option", disabled: o.disabled,
+                            class: "dropdown-option" + (current ? " current" : ""), "aria-selected": String(current),
+                            onmousemove: () => { if (i !== cursor) move(i, false); }, onclick: () => pick(i) },
+        iconOf(o.value), el("span", { class: "title" }, o.textContent),
+        current ? el("span", { class: "check" }, icon("check")) : null);
+    });
+    list.replaceChildren(...(rows.length ? rows : [el("div", { class: "note" }, "Nothing to pick.")]));
+    cursor = -1;
+    const at = values.indexOf(keep);
+    move(at >= 0 && !options[at].disabled ? at : next(-1, 1), true);
+  };
+
+  // The next enabled option from `from` in direction `dir`, or `from` itself at either end.
+  const next = (from, dir) => {
+    const options = select.options;
+    for (let i = from + dir; i >= 0 && i < options.length; i += dir) if (!options[i].disabled) return i;
+    return from;
+  };
+
+  const move = (i, reveal) => {
+    if (!rows[i]) return;
+    if (rows[cursor]) rows[cursor].classList.remove("selected");
+    cursor = i;
+    rows[i].classList.add("selected");
+    button.setAttribute("aria-activedescendant", rows[i].id);
+    if (!reveal) return;
+    const row = rows[i];
+    if (row.offsetTop < list.scrollTop) list.scrollTop = row.offsetTop - 4;
+    else if (row.offsetTop + row.offsetHeight > list.scrollTop + list.clientHeight) {
+      list.scrollTop = row.offsetTop + row.offsetHeight - list.clientHeight + 4;
+    }
+  };
+
+  // Under the button, or above it when there is more room there; it follows the button as the page scrolls.
+  const place = () => {
+    if (!button.isConnected || !button.getClientRects().length) { close(); return; }
+    const r = button.getBoundingClientRect();
+    list.style.minWidth = `${r.width}px`;
+    list.style.maxHeight = "";
+    const natural = Math.min(list.offsetHeight, DROPDOWN_HEIGHT);
+    const below = innerHeight - r.bottom - 12, above = r.top - 12;
+    const down = below >= natural || below >= above;
+    list.style.maxHeight = `${Math.max(80, Math.min(DROPDOWN_HEIGHT, down ? below : above))}px`;
+    list.style.top = `${down ? r.bottom + 4 : r.top - 4 - list.offsetHeight}px`;
+    list.style.left = `${Math.max(8, Math.min(r.left, innerWidth - list.offsetWidth - 8))}px`;
+  };
+
+  const onScroll = (e) => { if (list && e.target !== list) place(); };
+  const onResize = () => close();
+  const onOutside = (e) => {
+    if (!button.contains(e.target) && !(list && list.contains(e.target))) close();
+  };
+
+  const open = () => {
+    if (list || button.disabled) return;
+    if (closeOpenDropdown) closeOpenDropdown();
+    list = el("div", { id: `${id}-list`, role: "listbox", "aria-label": select.getAttribute("aria-label") || select.title || null,
+                       class: "dropdown-list floating" + (select.closest(".search-dialog") ? " over-dialog" : ""),
+                       onmousedown: (e) => e.preventDefault() });
+    list.style.textTransform = getComputedStyle(button).textTransform;
+    document.body.append(list);
+    cursor = -1;
+    draw();
+    place();
+    if (!list) return;
+    move(cursor, true);
+    button.setAttribute("aria-expanded", "true");
+    button.setAttribute("aria-controls", list.id);
+    closeOpenDropdown = close;
+    addEventListener("scroll", onScroll, true);
+    addEventListener("resize", onResize);
+    document.addEventListener("mousedown", onOutside, true);
+  };
+
+  function close(refocus) {
+    if (!list) return;
+    list.remove();
+    list = null;
+    rows = [];
+    cursor = -1;
+    button.setAttribute("aria-expanded", "false");
+    button.removeAttribute("aria-activedescendant");
+    button.removeAttribute("aria-controls");
+    if (closeOpenDropdown === close) closeOpenDropdown = null;
+    removeEventListener("scroll", onScroll, true);
+    removeEventListener("resize", onResize);
+    document.removeEventListener("mousedown", onOutside, true);
+    if (refocus === true) button.focus();
+  }
+
+  const toggle = () => {
+    button.focus();
+    if (list) close();
+    else open();
+  };
+
+  // Like the native list, a pick of the value it already has changes nothing.
+  const pick = (i) => {
+    const option = select.options[i];
+    if (!option || option.disabled) return;
+    close(true);
+    if (i === select.selectedIndex) return;
+    select.value = option.value;
+    select.dispatchEvent(new Event("input", { bubbles: true }));
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+
+  // Letters typed in quick succession find the next option whose label starts with them.
+  const typeAhead = (ch) => {
+    const now = Date.now();
+    typed = (now - typedAt < 700 ? typed : "") + ch.toLowerCase();
+    typedAt = now;
+    const n = select.options.length;
+    const start = typed.length > 1 ? Math.max(cursor, 0) : cursor + 1;
+    for (let k = 0; k < n; k++) {
+      const i = (start + k) % n, o = select.options[i];
+      if (!o.disabled && o.textContent.trim().toLowerCase().startsWith(typed)) { move(i, true); return; }
+    }
+  };
+
+  button.addEventListener("keydown", (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const letter = e.key.length === 1 && e.key !== " ";
+    if (!list) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || letter) {
+        e.preventDefault();
+        open();
+        if (letter) typeAhead(e.key);
+      }
+      return;
+    }
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(true); }
+    else if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); move(next(cursor, e.key === "ArrowDown" ? 1 : -1), true); }
+    else if (e.key === "Home") { e.preventDefault(); move(next(-1, 1), true); }
+    else if (e.key === "End") { e.preventDefault(); move(next(select.options.length, -1), true); }
+    else if (e.key === "Enter") { e.preventDefault(); pick(cursor); }
+    else if (letter) { e.preventDefault(); typeAhead(e.key); }
+  });
+  // Space clicks the button: it opens the list, or picks from it once open. A mouse click toggles it.
+  button.addEventListener("click", (e) => {
+    if (list && e.detail === 0) pick(cursor);
+    else toggle();
+  });
+  button.addEventListener("blur", () => close());
+  // A label around the select opens the list instead of reaching for the hidden select.
+  const label = select.closest("label");
+  if (label) label.addEventListener("click", (e) => { if (!button.contains(e.target)) { e.preventDefault(); toggle(); } });
+
+  Object.defineProperty(select, "value", {
+    configurable: true,
+    get() { return SELECT_VALUE.get.call(this); },
+    set(v) { SELECT_VALUE.set.call(this, v); refresh(); },
+  });
+  new MutationObserver(refresh).observe(select, {
+    childList: true, subtree: true, characterData: true,
+    attributes: true, attributeFilter: ["class", "disabled", "hidden", "title", "aria-label"],
+  });
+  if (select.form) select.form.addEventListener("reset", () => setTimeout(refresh));
+  dropdowns.set(select, button);
+  select.after(button);
+  refresh();
+  return button;
+}
+
+// Icons for the selects that wear them, by id.
+const DROPDOWN_ICONS = {
+  "p-status": (s) => (s ? statusIcon(s) : null),
+  "p-comment-status": (s) => (s ? statusIcon(s) : null),
+  "p-assignee": (name) => (name ? icon(isBot(name) ? "bot" : "human") : null),
+};
+
+function enhanceSelects(root) {
+  const found = root.matches("select") ? [root] : root.querySelectorAll("select");
+  for (const select of found) {
+    if (!select.hasAttribute("data-dropdown")) dropdown(select, { icon: DROPDOWN_ICONS[select.id] });
+  }
+}
+
 // Blocked and projects' own statuses sit off the todo-to-done progression, so the steps skip them.
 function statusStep(status) {
   const statuses = state.board.statuses.filter((s) => s !== "blocked" && !isCustom(s));
@@ -1299,7 +1525,7 @@ document.addEventListener("mousedown", (e) => {
   if (!e.target.closest(".menu, .nav .more, #settings, #network, #network-menu, .icon-pick")) closeMenu();
 });
 document.addEventListener("mousedown", (e) => {
-  if (state.task && e.button === 0 && !e.target.closest("#panel, .card, .menu, .search-dialog")) closeTask();
+  if (state.task && e.button === 0 && !e.target.closest("#panel, .card, .menu, .search-dialog, .dropdown-list")) closeTask();
 });
 window.addEventListener("resize", closeMenu);
 window.addEventListener("blur", closeMenu);
@@ -2315,7 +2541,7 @@ function openParentPick() {
   input.addEventListener("keydown", parentKeydown);
   input.addEventListener("blur", closeParentPick);
   $("#p-parent").replaceChildren(el("div", { class: "parent-pick" }, input,
-    el("div", { class: "parent-results", role: "listbox" })));
+    el("div", { class: "dropdown-list", role: "listbox" })));
   input.focus();
   findParents("");
 }
@@ -2366,20 +2592,20 @@ function parentCandidates(tasks) {
 }
 
 function showParentOptions(tasks, q, searching) {
-  const list = $("#p-parent .parent-results");
+  const list = $("#p-parent .dropdown-list");
   if (!list || !panelTask) return;
   parentOptions = parentCandidates(tasks).slice(0, 30);
   parentSelected = 0;
   const empty = searching ? "Searching…" : q.trim() ? "No tasks match." : "No tasks to pick.";
   list.replaceChildren(...parentOptions.map((t, i) =>
-    el("button", { type: "button", class: "parent-option" + (i === 0 ? " selected" : ""), role: "option",
+    el("button", { type: "button", class: "dropdown-option" + (i === 0 ? " selected" : ""), role: "option",
                    onmousedown: (e) => e.preventDefault(), onmousemove: () => selectParent(i), onclick: () => pickParent(t) },
       statusIcon(t.status), el("span", { class: "mono" }, key(t)), el("span", { class: "title" }, t.title))),
     ...(parentOptions.length ? [] : [el("div", { class: "note" }, empty)]));
 }
 
 function selectParent(i) {
-  const rows = $("#p-parent").querySelectorAll(".parent-option");
+  const rows = $("#p-parent").querySelectorAll(".dropdown-option");
   if (!rows.length) return;
   parentSelected = (i + rows.length) % rows.length;
   rows.forEach((r, j) => r.classList.toggle("selected", j === parentSelected));
@@ -2757,7 +2983,7 @@ function renderCommentStatus(task, statuses) {
   if (queued) agents.checked = true;
   else if (agents.dataset.queued) agents.checked = false;
   agents.dataset.queued = queued ? "1" : "";
-  if (document.activeElement !== pick) {
+  if (document.activeElement !== dropdownButton(pick)) {
     const picked = pick.value;
     const moves = statuses.filter((s) => s !== task.status);
     pick.replaceChildren(el("option", { value: "" }, "Change status"),
@@ -2898,7 +3124,7 @@ $("#search").addEventListener("keydown", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  const typing = e.target.closest('input, textarea, select, [contenteditable="true"]');
+  const typing = e.target.closest('input, textarea, select, .dropdown-button, [contenteditable="true"]');
   const plain = !typing && !e.metaKey && !e.ctrlKey;
   if (e.key === "Escape" && state.menu) { closeMenu(); return; }
   // Only in the installed app: in a browser tab, these keys belong to the browser.
@@ -3416,6 +3642,12 @@ function walkStatic() {
 
 loadDictionary().then(() => {
   walkStatic();
+  // Every select, now and as later rendering adds them, gets the board's own dropdown;
+  // after walkStatic, so its buttons show the translated labels.
+  enhanceSelects(document.body);
+  new MutationObserver((records) => {
+    for (const r of records) for (const node of r.addedNodes) if (node.nodeType === 1) enhanceSelects(node);
+  }).observe(document.body, { childList: true, subtree: true });
   checkUpdate();
   setInterval(checkUpdate, 24 * 60 * 60 * 1000);
   loadSyncRemote();
