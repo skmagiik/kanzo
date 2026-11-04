@@ -3037,7 +3037,12 @@ $("#p-comment-form").addEventListener("submit", async (e) => {
     if (status) fields.status = status;
     if (assign) fields.assignee = AI_AGENTS;
     // patchTask refreshes the panel and board itself.
-    if (Object.keys(fields).length && panelTask && panelTask.id === id) { await patchTask(fields); return; }
+    if (Object.keys(fields).length && panelTask && panelTask.id === id) {
+      await patchTask(fields);
+      // Finished with: the panel goes, so the board shows. Only once the move saved.
+      if (status === "done" && state.task === id && panelTask && panelTask.status === "done") closeTask();
+      return;
+    }
     await refreshTask();
     loadBoard();
   } catch (err) { toast(err.message); }
