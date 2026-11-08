@@ -156,6 +156,18 @@ fn only_humans(who: Option<&Account>, what: &str) -> store::Result<()> {
     }
 }
 
+/// A template is a pattern for new projects: agents read it, and work in the projects made from it.
+/// Only a human account changes it over MCP; without a token the caller is taken for an agent.
+fn not_template(store: &Store, who: Option<&Account>, project: &str) -> store::Result<()> {
+    if kind(who) == Some(Kind::Human) || !store.find_project(project)?.template {
+        return Ok(());
+    }
+    Err(Error::Invalid(format!(
+        "{project} is a template: agents can read it, but its tasks are worked in projects made from it \
+         (create_project with template \"{project}\")"
+    )))
+}
+
 /// An orchestrator made for one project works only in it.
 fn own_project(store: &Store, who: Option<&Account>) -> store::Result<Option<Project>> {
     match who {
@@ -481,7 +493,7 @@ impl Kanzo {
                         out.push_str(" <- current repo");
                     }
                     if p.template {
-                        out.push_str(" [template: agents don't take its tasks]");
+                        out.push_str(" [template: read only; work happens in projects made from it]");
                     }
                     out.push('\n');
                     for c in columns.iter().filter(|c| c.project == p.slug) {
@@ -634,6 +646,7 @@ impl Kanzo {
                     Some(own) => within(own, project.as_deref())?,
                     None => ctx.project(store, project.as_deref())?,
                 };
+                not_template(store, who, &project.slug)?;
                 let parent = match parent.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
                     Some(key) => Some(find_task(store, who, &TaskKey::Text(key.into()))?.id),
                     None => None,
@@ -667,6 +680,7 @@ impl Kanzo {
                 let who = who.as_ref();
                 store.acting_as(&actor(who, None, client));
                 let before = find_task(store, who, &args.id)?;
+                not_template(store, who, &before.project)?;
                 let status = args.status.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
                 let assignee = match args.assignee.as_deref().map(str::trim) {
                     None => None,
@@ -774,6 +788,7 @@ impl Kanzo {
             .run(move |ctx, store| {
                 let who = caller(store, args.token.as_deref())?;
                 let task = find_task(store, who.as_ref(), &args.id)?;
+                not_template(store, who.as_ref(), &task.project)?;
                 let author = actor(who.as_ref(), args.author, client);
                 let files = save_images(ctx, &args.images.unwrap_or_default())?;
                 store.add_comment(task.id, &author, &args.body, &files)?;
@@ -808,6 +823,7 @@ impl Kanzo {
                             Some(own) => within(own, args.project.as_deref())?,
                             None => ctx.project(store, args.project.as_deref())?,
                         };
+                        not_template(store, who, &project.slug)?;
                         let Some(task) = store.queued_for_agents(project.id)? else {
                             return Ok(format!(
                                 "Nothing in todo for {} is queued for {}.",
@@ -827,6 +843,9 @@ impl Kanzo {
                     }
                     _ => (ctx.scope(store, args.project.as_deref())?, None),
                 };
+                if let Some(p) = &project {
+                    not_template(store, who, &p.slug)?;
+                }
                 let id = project.as_ref().map(|p| p.id);
                 let filter = args.filter.as_deref().unwrap_or("");
                 match store.next_task_matching(id, assignee, filter)? {
@@ -882,6 +901,7 @@ impl Kanzo {
                     return Err(refuse(who, "assign tasks"));
                 }
                 let task = find_task(store, who, &args.id)?;
+                not_template(store, who, &task.project)?;
                 if task.status == store::DONE {
                     return Err(Error::Invalid(format!("{} is done", task.key())));
                 }
@@ -952,6 +972,13 @@ impl Kanzo {
                     _ if args.project.is_some() => named_project(store, args.project.as_deref())?,
                     _ => ctx.project(store, None).ok(),
                 };
+                // Accounts for a template would have nothing to work on.
+                if let Some(p) = project.as_ref().filter(|p| p.template) {
+                    return Err(Error::Invalid(format!(
+                        "{} is a template; register for a project made from it",
+                        p.slug
+                    )));
+                }
                 let name = args.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
                 let account = match (name, new, &project) {
                     (Some(name), ..) => store.create_account(name, new, project.as_ref().map(|p| p.id))?,

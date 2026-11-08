@@ -198,7 +198,7 @@ A task's panel has a Parent field: pick any task, by key or title, to make this 
 
 ## Start projects from templates
 
-Mark a project as a template from its ⋯ menu, under Use as template. New projects can then start from it: pick it under Start from when you create one, or choose New project from this template in its menu. The new project gets the template's own columns and its tasks that aren't done, with their descriptions, tags, images and AI Agents or people assignees; comments stay behind. Agents never take a template's own tasks, so a template can hold work queued for AI Agents that only starts in the projects made from it.
+Mark a project as a template from its ⋯ menu, under Use as template. New projects can then start from it: pick it under Start from when you create one, or choose New project from this template in its menu. The new project gets the template's own columns and its tasks that aren't done, with their descriptions, tags, images and AI Agents or people assignees; comments stay behind. Agents read templates but never work in them: they don't take a template's tasks, and over MCP only a human account can change one. So a template can hold work queued for AI Agents that only starts in the projects made from it.
 
 ## Use it on several computers
 
