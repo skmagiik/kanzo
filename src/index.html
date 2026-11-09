@@ -243,12 +243,12 @@ html:not([data-hide~="waiting"]) .card.waiting:not(:hover) { opacity: .6; }
 .row .head { flex: 1; min-width: 0; }
 .row .tags { margin: 0; flex-shrink: 0; max-width: 40%; flex-wrap: nowrap; overflow: hidden; }
 #list-tools { display: flex; gap: 6px; }
-#list-tools select { width: auto; height: 35px; padding: 0 28px 0 12px; border-radius: 99px; font-size: 13px; }
-/* The label sits over the select, so that clicking anywhere on the pill opens it. */
+#list-tools .dropdown-button { width: auto; height: 35px; padding: 0 10px 0 12px; border-radius: 99px; font-size: 13px; }
+/* The label sits over the pill, so that clicking anywhere on it opens the list. */
 .pick { position: relative; display: inline-flex; }
-.pick span { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 13px; white-space: nowrap; pointer-events: none; }
-#list-tools #list-sort { padding-left: 64px; }
-#list-tools #list-group { padding-left: 75px; }
+.pick > span { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 13px; white-space: nowrap; pointer-events: none; z-index: 1; }
+#list-tools #list-sort + .dropdown-button { padding-left: 64px; }
+#list-tools #list-group + .dropdown-button { padding-left: 75px; }
 .card.selected { box-shadow: inset 0 0 0 2px var(--link); }
 .marquee { position: fixed; z-index: 9; pointer-events: none; background: color-mix(in srgb, var(--link) 15%, transparent); }
 .bulk { padding-left: 14px; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; width: max-content; max-width: calc(100vw - 16px); }

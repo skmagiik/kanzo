@@ -1561,8 +1561,8 @@ function renderHeader() {
   header.replaceChildren(
     el("h1", {}, p.name),
     el("span", { class: "sub" }, open(p.open)),
-    p.template ? el("span", { class: "sub template-note", title: "New projects can start from this one" },
-      icon("template"), "Template · agents don't take these tasks") : null,
+    ...(p.template ? [el("span", { class: "sub template-note", title: "New projects can start from this one" },
+      icon("template"), "Template · agents don't take these tasks")] : []),
     ...p.repos.map((r) => el("a", { class: "repo-link", href: `https://github.com/${r}`, target: "_blank", rel: "noopener",
                                     title: tr("Open {0} on GitHub", r) }, icon("github"), r)),
   );
