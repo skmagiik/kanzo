@@ -132,7 +132,7 @@ The work goes round like this:
 4. The agent works the task, comments as it goes, and moves it to `blocked` when stuck or `review` when done.
 5. The orchestrator reviews it: it marks it Human for you to review, or calls `assign_task` again to hand a blocked task to another agent.
 
-Make accounts from the terminal with `kanzo account add`, or in Settings, under Accounts, which lists the tokens too. A task's panel assigns it to you, another person, or AI Agents; once an orchestrator hands it on, the card shows the agent working on it. Orchestrators never take a task assigned to a person. Every move and every change of assignee shows among the task's comments, with who made it. Tokens say who is calling, not who is allowed in: anyone who can reach the board or its file can read them.
+Make accounts from the terminal with `kanzo account add`, or in Settings, under Accounts, which lists the tokens too. A task's panel assigns it to you, another person, or AI Agents, and agents do the same with `assignee` on `create_task` or `update_task`. Whoever starts a task that is unassigned or queued for AI Agents takes it, so the card shows the agent working on it: an orchestrator's task agent, or an agent without a token under its MCP client's name, like `claude-code`, as its comments are signed. Orchestrators never take a task assigned to a person. Every move and every change of assignee shows among the task's comments, with who made it. Tokens say who is calling, not who is allowed in: anyone who can reach the board or its file can read them.
 
 ## Park ideas in a backlog
 

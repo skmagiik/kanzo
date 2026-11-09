@@ -40,9 +40,10 @@ macro_rules! instructions {
             $project,
             " Keep it current unasked: doing when you start a task, comments on what you did, blocked when you \
              get stuck, review when you finish, url for a PR you opened. On review, comment how to resume this \
-             session. Leave done and human tasks to the user. list_projects describes a project's own columns. \
-             Link tasks as api#12, comments as api#12/c34 and files as [name](file:///path). If you were given a \
-             Kanzo token, pass it as `token` on every call."
+             session. Leave done and human tasks to the user. Work meant for AI agents is assigned to \
+             \"AI Agents\" (`assignee` on create_task or update_task); moving a task to doing assigns it to you. \
+             list_projects describes a project's own columns. Link tasks as api#12, comments as api#12/c34 and \
+             files as [name](file:///path). If you were given a Kanzo token, pass it as `token` on every call."
         )
     };
 }
@@ -166,6 +167,53 @@ fn not_template(store: &Store, who: Option<&Account>, project: &str) -> store::R
         "{project} is a template: agents can read it, but its tasks are worked in projects made from it \
          (create_project with template \"{project}\")"
     )))
+}
+
+/// `assignee` as agents pass it: "AI Agents", an account's name, or "" for nobody.
+fn parse_assignee(store: &Store, name: &str) -> store::Result<(store::Assignee, Option<Account>)> {
+    Ok(match name.trim() {
+        "" => (store::Assignee::Nobody, None),
+        n if n.eq_ignore_ascii_case(store::AI_AGENTS) => (store::Assignee::Agents, None),
+        n => {
+            let a = store.find_account(n)?;
+            (store::Assignee::Account(a.id), Some(a))
+        }
+    })
+}
+
+/// An orchestrator hands work to task agents of the task's project, never to another orchestrator.
+fn check_handoff(to: &Account, project: &str) -> store::Result<()> {
+    if to.kind == Kind::Orchestrator {
+        return Err(Error::Invalid(format!("{} is an orchestrator, not a task agent", to.name)));
+    }
+    match to.project.as_deref().filter(|p| *p != project) {
+        Some(p) => Err(Error::Invalid(format!("{} works on {p}, not {project}", to.name))),
+        None => Ok(()),
+    }
+}
+
+/// A task nobody has, or one queued for AI agents, goes to whoever starts it.
+fn unowned(t: &Task) -> bool {
+    t.assignee.as_deref().is_none_or(|a| a == store::AI_AGENTS)
+}
+
+/// Who a task goes to when this caller starts it: its own account, or for an agent without a token,
+/// an agent account named after its MCP client, as its comments are, made the first time. An
+/// orchestrator hands work on instead, and a name taken by a person or an orchestrator isn't used.
+fn taker(store: &Store, who: Option<&Account>, client: Option<&str>) -> store::Result<Option<i64>> {
+    match who {
+        Some(a) => Ok((a.kind != Kind::Orchestrator).then_some(a.id)),
+        None => {
+            let Some(name) = client.map(str::trim).filter(|n| !n.is_empty()) else { return Ok(None) };
+            let found = match store.find_account(name) {
+                Err(Error::NotFound(_)) => {
+                    store.create_account(name, Kind::Agent, None).or_else(|_| store.find_account(name))
+                }
+                found => found,
+            };
+            Ok(found.ok().filter(|a| a.kind == Kind::Agent).map(|a| a.id))
+        }
+    }
 }
 
 /// An orchestrator made for one project works only in it.
@@ -323,6 +371,8 @@ struct CreateTaskArgs {
     waits_on: Option<String>,
     /// Like api#12: makes it a subtask of that task.
     parent: Option<String>,
+    /// "AI Agents" queues it for agents; or an account's name.
+    assignee: Option<String>,
     token: Option<String>,
 }
 
@@ -623,7 +673,7 @@ impl Kanzo {
             .await)
     }
 
-    #[tool(description = "Add a task, to todo unless you pass status.")]
+    #[tool(description = "Add a task, to todo unless you pass status. assignee \"AI Agents\" queues it for agents.")]
     async fn create_task(
         &self,
         Parameters(args): Parameters<CreateTaskArgs>,
@@ -631,7 +681,18 @@ impl Kanzo {
     ) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run_for(&ext, move |ctx, store| {
-                let CreateTaskArgs { title, description, project, tags, status, human, waits_on, parent, token } = args;
+                let CreateTaskArgs {
+                    title,
+                    description,
+                    project,
+                    tags,
+                    status,
+                    human,
+                    waits_on,
+                    parent,
+                    assignee,
+                    token,
+                } = args;
                 let who = caller(store, token.as_deref())?;
                 let who = who.as_ref();
                 let status = status.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
@@ -651,6 +712,13 @@ impl Kanzo {
                     Some(key) => Some(find_task(store, who, &TaskKey::Text(key.into()))?.id),
                     None => None,
                 };
+                let assignee = match assignee.as_deref() {
+                    Some(name) => Some(parse_assignee(store, name)?),
+                    None => None,
+                };
+                if let (Some(Kind::Orchestrator), Some((_, Some(to)))) = (kind(who), &assignee) {
+                    check_handoff(to, &project.slug)?;
+                }
                 let patch = TaskPatch {
                     description,
                     status,
@@ -658,10 +726,12 @@ impl Kanzo {
                     human,
                     waits_on,
                     parent: parent.map(Some),
+                    assignee: assignee.map(|(a, _)| a),
                     ..Default::default()
                 };
                 let t = store.create_task_in(project.id, &title, patch)?;
-                Ok(format!("Created {} in {}: {}{}", t.key(), t.status, t.title, waits_note(store, &t)?))
+                let to = t.assignee.as_ref().map_or(String::new(), |a| format!(", assigned to {a}"));
+                Ok(format!("Created {} in {}{to}: {}{}", t.key(), t.status, t.title, waits_note(store, &t)?))
             })
             .await)
     }
@@ -678,18 +748,13 @@ impl Kanzo {
             .run(move |_, store| {
                 let who = caller(store, args.token.as_deref())?;
                 let who = who.as_ref();
-                store.acting_as(&actor(who, None, client));
+                store.acting_as(&actor(who, None, client.clone()));
                 let before = find_task(store, who, &args.id)?;
                 not_template(store, who, &before.project)?;
                 let status = args.status.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
-                let assignee = match args.assignee.as_deref().map(str::trim) {
+                let assignee = match args.assignee.as_deref() {
+                    Some(name) => Some(parse_assignee(store, name)?),
                     None => None,
-                    Some("") => Some((store::Assignee::Nobody, None)),
-                    Some(n) if n.eq_ignore_ascii_case(store::AI_AGENTS) => Some((store::Assignee::Agents, None)),
-                    Some(n) => {
-                        let a = store.find_account(n)?;
-                        Some((store::Assignee::Account(a.id), Some(a)))
-                    }
                 };
                 let to = assignee.as_ref().map(|(_, a)| a.as_ref());
                 let parent = match args.parent.as_deref().map(str::trim) {
@@ -731,16 +796,18 @@ impl Kanzo {
                             return Err(refuse(who, "take a task back from the user"));
                         }
                         if let Some(Some(a)) = to {
-                            if a.kind == Kind::Orchestrator {
-                                return Err(Error::Invalid(format!("{} is an orchestrator, not a task agent", a.name)));
-                            }
-                            if let Some(p) = a.project.as_ref().filter(|p| **p != before.project) {
-                                return Err(Error::Invalid(format!("{} works on {p}, not {}", a.name, before.project)));
-                            }
+                            check_handoff(a, &before.project)?;
                         }
                     }
                     _ => {}
                 }
+                let starts = status.as_deref() == Some(store::DOING) && before.status != store::DOING;
+                let assignee = match assignee {
+                    None if starts && unowned(&before) => {
+                        taker(store, who, client.as_deref())?.map(|id| (store::Assignee::Account(id), None))
+                    }
+                    assignee => assignee,
+                };
                 let after = store.update_task(
                     before.id,
                     TaskPatch {
@@ -815,7 +882,7 @@ impl Kanzo {
             .run_for(&ext, move |ctx, store| {
                 let who = caller(store, args.token.as_deref())?;
                 let who = who.as_ref();
-                store.acting_as(&actor(who, None, client));
+                store.acting_as(&actor(who, None, client.clone()));
                 let (project, assignee) = match kind(who) {
                     Some(Kind::Agent) => (named_project(store, args.project.as_deref())?, who.map(|a| a.id)),
                     Some(Kind::Orchestrator) => {
@@ -849,7 +916,15 @@ impl Kanzo {
                 let id = project.as_ref().map(|p| p.id);
                 let filter = args.filter.as_deref().unwrap_or("");
                 match store.next_task_matching(id, assignee, filter)? {
-                    Some(task) => Ok(format!("Moved to {}:\n{}", task.status, task_detail(ctx, store, &task)?)),
+                    Some(mut task) => {
+                        if unowned(&task)
+                            && let Some(id) = taker(store, who, client.as_deref())?
+                        {
+                            let take = TaskPatch { assignee: Some(store::Assignee::Account(id)), ..Default::default() };
+                            task = store.update_task(task.id, take)?;
+                        }
+                        Ok(format!("Moved to {}:\n{}", task.status, task_detail(ctx, store, &task)?))
+                    }
                     None => {
                         let waiting = store.waiting_in_todo(id, assignee, filter)?;
                         let scope = project.map_or("any project".into(), |p| p.slug);
@@ -1396,6 +1471,48 @@ mod tests {
 
             assert!(reply.contains("Comment added"), "{reply}");
             assert_eq!(authors(&home, &task), ["agent"]);
+        });
+    }
+
+    #[test]
+    fn an_agent_without_a_token_queues_work_for_ai_agents_and_takes_what_it_starts() {
+        block_on(async {
+            let (dir, home, mine) = board();
+            let store = home.store().unwrap();
+            store.create_account("Ada", Kind::Human, None).unwrap();
+            let mut agent = Agent::start(home.clone(), dir.path());
+            let mut call = async |client: Option<&str>, name: &str, args: Value| -> String {
+                let params = json!({ "name": name, "arguments": args, "_meta": stateless(client) });
+                let message = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params });
+                let reply = agent.send(message).await.unwrap();
+                reply["result"]["content"][0]["text"].as_str().unwrap().to_string()
+            };
+            let assignee = |id| store.get_task(id).unwrap().assignee;
+            let codex = Some("codex-mcp-client");
+
+            let new = |title: &str, to: &str| json!({ "title": title, "project": "api", "assignee": to });
+            let queued = call(codex, "create_task", new("Fix it", "ai agents")).await;
+            assert_eq!(queued, "Created api#2 in todo, assigned to AI Agents: Fix it");
+            let ada = call(codex, "create_task", new("Ada's", "Ada")).await;
+            assert_eq!(ada, "Created api#3 in todo, assigned to Ada: Ada's");
+
+            // Starting a task takes it, under the client's name as its comments are signed.
+            call(codex, "update_task", json!({ "id": "api#2", "status": "doing" })).await;
+            assert_eq!(assignee(2).as_deref(), Some("codex-mcp-client"));
+            assert_eq!(store.find_account("codex-mcp-client").unwrap().kind, Kind::Agent);
+            call(codex, "update_task", json!({ "id": "api#3", "status": "doing" })).await;
+            assert_eq!(assignee(3).as_deref(), Some("Ada"), "a person's task stays theirs");
+            call(Some("claude-code"), "update_task", json!({ "id": "api#2", "status": "doing" })).await;
+            assert_eq!(assignee(2).as_deref(), Some("codex-mcp-client"), "a task already started stays its agent's");
+
+            let next = call(Some("claude-code"), "next_task", json!({ "project": "api" })).await;
+            assert!(next.starts_with("Moved to doing:\napi#1 Ship it"), "{next}");
+            assert_eq!(assignee(mine.id).as_deref(), Some("claude-code"));
+
+            // With no name to go by, nobody takes it.
+            call(None, "create_task", new("Anon", "AI Agents")).await;
+            call(None, "update_task", json!({ "id": "api#4", "status": "doing" })).await;
+            assert_eq!(assignee(4).as_deref(), Some(store::AI_AGENTS));
         });
     }
 }
